@@ -1,3 +1,6 @@
+# note: the function tf.layers.dense is deprecated now
+# use keras.layers.dense instead
+
 from datetime import datetime
 import tensorflow as tf
 import numpy as np
