@@ -95,6 +95,13 @@ for i in range(251, num_date):
         y_pred_test = model.predict(X_test)
         y_pred_test[y_pred_test == 0] = -1
         y_score_test = model.decision_function(X_test)
+    
+    # Variations for Linear Regression
+    # if para.method == 'LR':
+    #    model = linear_model.LinearRegression()   
+    #    model.fit(x_data, y_data)
+    #    y_pred = model.predict(x_pred)
+
 
     num_col = x_data_pred_df.shape[1]
     x_data_pred_df.insert(loc=num_col, column='y_pred', value=y_pred_test)
