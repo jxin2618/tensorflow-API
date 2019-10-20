@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 from sklearn import decomposition
 from keras.models import Sequential
 from keras.layers import Dense
-
 import os
 
 tic = datetime.now()
@@ -30,7 +29,7 @@ class Para:
 para = Para()
 tf.set_random_seed(para.seed_number)
 np.random.seed(para.seed_number)
-
+# make a path to storw the train results
 os.mkdir(para.path_results)
 info_file = open(para.path_results + 'info.txt', 'a')
 info_file.write('input =' + str(para.input_cells) + '\n' + 'pca_select = ' + str(para.pca_component) + '\n' +
@@ -38,11 +37,11 @@ info_file.write('input =' + str(para.input_cells) + '\n' + 'pca_select = ' + str
                 str(para.n_hidden_2) + '\n' + 'drop_rate = ' + str(para.drop_rate) + '\n' + 'learning_rate = ' +
                 str(para.learning_rate) + '\n' + 'iteration = ' + str(para.iteration) + '\n')
 info_file.close()
-filename1 = 'D:/QuantCN/nn_result/nn_together/等权组合/Oct_Week2/Mon/factors/features_label.csv'
 
+filename1 = 'D:/QuantCN/nn_result/nn_together/等权组合/Oct_Week2/Mon/factors/features_label.csv'
 df = pd.read_csv(filename1, encoding='gb18030', low_memory=False)
 
-labels_df = df.loc[:, ['OptionCode', 'EndDate', 'rtn', 'rtn_roll_-1']]
+# first 4 columns are labels: 'OptionCode', 'EndDate', 'rtn', 'rtn_roll_-1'
 df['EndDate'] = df.loc[:, 'EndDate'].apply(lambda x: pd.Timestamp(x))
 df = df.sort_values(by=['EndDate'], ascending=True)
 df = df.reset_index(drop=True)
@@ -65,11 +64,9 @@ x_mean, x_var = tf.nn.moments(x_raw, [0])
 x_norm = tf.nn.batch_normalization(x_raw, mean=x_mean, variance=x_var, offset=None, scale=1, variance_epsilon=0.001)
 
 o1 = tf.layers.dense(xs, para.n_hidden_1, tf.nn.tanh)
-# h1 = tf.math.tanh(o1)
 d1 = tf.layers.dropout(o1, rate=para.drop_rate, training=False)
 
 o2 = tf.layers.dense(d1, para.n_hidden_2, tf.nn.tanh)
-# h2 = tf.math.tanh(o2)
 d2 = tf.layers.dropout(o2, rate=para.drop_rate, training=False)
 out = tf.layers.dense(d2, 1)
 
@@ -84,11 +81,8 @@ sess = tf.Session(config=session_conf)
 pred_df = pd.DataFrame(columns=['OptionCode', 'EndDate', 'rtn', 'rtn_roll_-1'] + list(
     range(para.pca_component)) + ['pred_rtn'])
 
-N = []
-WX1 = []
-WX2 = []
-for i in range(251, 300):
-    print(End_Date[i])
+for i in range(251, num_date):
+    print('Train:' + str(End_Date[i]))
     error_file = open(para.path_results + 'error.txt', 'a')
     error_file.write(str(End_Date[i]) + '\n')
     df2 = df.loc[np.isin(df.loc[:, 'EndDate'].values, End_Date[i - 251: i + 1])]
@@ -123,11 +117,6 @@ for i in range(251, 300):
 
     pred_inputs = x_data_pred_df.iloc[:, 4:].values
     pred_rtn = sess.run(out, feed_dict={xs: pred_inputs, drop_rate: 0})
-    N.append([x_data, pred_inputs])
-    # L1.append(sess.run(h1, feed_dict={xs: pred_inputs, drop_rate: 0}))
-    # L2.append(sess.run(h2, feed_dict={xs: pred_inputs, drop_rate: 0}))
-    WX1.append(sess.run(o1, feed_dict={xs: pred_inputs, drop_rate: 0}))
-    WX2.append(sess.run(o2, feed_dict={xs: pred_inputs, drop_rate: 0}))
 
     num_col = x_data_pred_df.shape[1]
     x_data_pred_df.insert(loc=num_col, column='pred_rtn', value=pred_rtn)
@@ -138,7 +127,7 @@ os.mkdir(para.path_results + 'pred/')
 os.mkdir(para.path_results + 'graphs/')
 for j in range(num_option):
     code = option[j]
-    print(code)
+    print('plot the graph indicating the net value for option ' + str(code))
     sub_df = pred_df.loc[pred_df.loc[:, 'OptionCode'] == code]
     sub_df_size = sub_df.iloc[:, 0].size
     if sub_df_size > 0:
