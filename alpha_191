@@ -1,0 +1,2008 @@
+from scipy.stats import rankdata
+import scipy as sp
+import numpy as np
+import pandas as pd
+from scipy.stats import pearsonr
+
+# 对factors里面的日期，数据从main_force中提取
+
+
+filename1 = 'D:/QuantCN/factors/factors_min.csv'
+new_df = pd.read_csv(filename1, encoding='gb18030')
+new_df['EndDate'] = new_df.loc[:, 'EndDate'].apply(lambda x: pd.Timestamp(x))
+
+
+def get_price(option, select_cols):
+    df = new_df[select_cols]
+    df1 = df.loc[df.loc[:, 'OptionCode'] == option]
+    df1.reset_index(drop=True, inplace=True)
+    return df1
+
+
+class CalAlpha:
+
+    def __init__(self, option):
+        price = get_price(option, ['OptionCode', 'EndDate', 'open', 'close', 'low', 'high', 'vwap', 'acc_volume'])
+
+        # ####分别取开盘价，收盘价，最高价，最低价，最低价，均价，成交量#######
+        self.open_price = price.loc[:, 'open']
+        self.close = price.loc[:, 'close']
+        self.low = price.loc[:, 'low']
+        self.high = price.loc[:, 'high']
+        self.settle = price.loc[:, 'vwap']
+        self.volume = price.loc[:, 'acc_volume']
+        # self.rtn = price.loc[:, 'rtn']
+      #########################################################################
+    # TSRANK 函数
+
+    def func_rank(self, na):
+         return rankdata(na)[-1] / rankdata(na).max()
+
+    # DECAYLINEAR函数
+
+    def func_decaylinear(self, na):
+      n = len(na)
+      decay_weights = np.arange(1, n + 1, 1)
+      decay_weights = decay_weights / decay_weights.sum()
+
+      return (na * decay_weights).sum()
+
+    # HIGHDAY 函数
+    def func_highday(self, na):
+        return len(na) - na.argmax()
+
+    # LOWDAY 函数
+    def func_lowday(self, na):
+        return len(na) - na.argmin()
+
+    #############################################################################
+
+    def alpha_001(self):
+        data1 = self.volume.apply(lambda x: np.log(x)).diff(periods=1).rank(axis=0, pct=True)
+        data2 = ((self.close - self.open_price) / self.open_price).rank(axis=0, pct=True)
+        corr = -data1.rolling(6).corr(data2)
+        alpha = corr.replace([np.inf, -np.inf], 0)
+        return alpha.fillna(0)
+
+    def alpha_002(self):
+        # #### -1 * delta((((close-low)-(high-close))/((high-low)),1))####
+        result = -((self.close - self.low) - (self.high - self.close)) / (self.high - self.low).diff()
+        alpha = result.replace([np.inf, -np.inf], 0)
+
+        return alpha
+
+    ########################################################################
+
+    def alpha_003(self):
+        delay1 = self.close.shift()  # 计算close_{i-1}
+        condition1 = (self.close == delay1)
+        condition2 = (self.close > delay1)
+        condition3 = (self.close < delay1)
+
+        part2 = (self.close - np.minimum(delay1[condition2], self.low[condition2])).fillna(0)  # 取最近的6位数据
+        part3 = (self.close - np.maximum(delay1[condition3], self.low[condition3])).fillna(0)
+        result = part2 + part3
+
+        alpha = result.rolling(6).sum()
+
+        return alpha
+
+    #######################################################################
+    # def alpha_004(self):
+    #    condition1 = (self.close.rolling(8).sum() / 8 + self.close.rolling(8).std() < self.close.rolling(2).sum() / 2)
+    #    condition2 = (self.close.rolling(2).sum() / 2 < (
+    #                self.close.rolling(8).sum() / 8 - self.close.rolling(8).std()))
+    #    condition3 = (1 <= self.volume / self.volume.rolling(20).mean())
+
+    #    indicator1 = pd.DataFrame(np.ones(self.close.shape), index=self.close.index)  # [condition2]
+    #    indicator2 = -pd.DataFrame(np.ones(self.close.shape), index=self.close.index)   # [condition3]
+    #    part1 = pd.DataFrame(np.zeros(self.close.shape), index=self.close.index)
+    #    part2 = pd.DataFrame(np.zeros(self.close.shape), index=self.close.index)
+    #    part3 = pd.DataFrame(np.zeros(self.close.shape), index=self.close.index)
+    #    part4 = pd.DataFrame(np.zeros(self.close.shape), index=self.close.index)
+
+    #   index1 = self.close[condition1].index.tolist()
+    #    part1.loc[index1, :] = indicator2.loc[index1, :]
+    #    index2 = self.close[~condition1 & condition2].index.tolist()
+    #    part2.loc[index2, :] = indicator1.loc[index2, :]
+    #    index3 = self.close[~condition1 & ~condition2 & condition3].index.tolist()
+    #    part3.loc[index3, :] = indicator1.loc[index3, :]
+    #    index4 = self.close[~condition1 & ~condition2 & ~condition3].index.tolist()
+    #    part4.loc[index4] = indicator2.loc[index4, :]
+
+    #   alpha = part1 + part2 + part3 + part4
+
+    #    return alpha.iloc[:, 0]
+
+    ###############################################################
+    def alpha_005(self):
+        ts_volume = self.volume.rolling(5).apply(self.func_rank, raw=True)
+        ts_high = self.high.rolling(5).apply(self.func_rank, raw=True)
+        corr_ts = ts_high.rolling(5).corr(ts_volume).fillna(0)
+        alpha = corr_ts.rolling(3).max()
+        alpha = alpha.replace([np.inf, -np.inf], 0)
+        return alpha
+
+        ###############################################################
+
+    # def alpha_006(self):
+    #     indicator1 = (self.open_price * 0.85 + self.high * 0.15).diff(4)
+    #     indicator2 = indicator1.apply(lambda x: np.sign(x))
+    #
+    #     alpha = (indicator2.rank(axis=0, pct=True))*(-1)  # cross section rank
+    #
+    #     return alpha
+
+    #################################################################
+    def alpha_007(self):
+        part1 = (np.maximum(self.settle - self.close, 3)).rank(axis=0, pct=True)
+        part2 = (np.minimum(self.settle - self.close, 3)).rank(axis=0, pct=True)
+        part3 = (self.volume.diff(3)).rank(axis=0, pct=True)
+        alpha = part1 + part2 * part3
+
+        return alpha
+
+    #################################################################
+    def alpha_008(self):
+        temp = (self.high + self.low) * 0.2 / 2 + self.settle * 0.8
+        result = -temp.diff(4)
+        alpha = result.rank(axis=0, pct=True)
+
+        return alpha
+
+    #################################################################
+    def alpha_009(self):
+        temp = (self.high + self.low) * 0.5 - (self.high.shift() + self.low.shift()) * 0.5 * (
+                    self.high - self.low) / self.volume  # 计算close_{i-1}
+        result = temp.ewm(alpha=2 / 7).mean()
+        alpha = result.fillna(0)
+
+        return alpha
+
+    #################################################################
+    def alpha_010(self):
+        ret = self.close.pct_change()
+        condition = (ret < 0)
+        part1 = pd.DataFrame(np.zeros(self.close.shape), index=self.close.index)
+        part2 = pd.DataFrame(np.zeros(self.close.shape), index=self.close.index)
+        index1 = self.close[condition].index.tolist()
+        index2 = self.close[~condition].index.tolist()
+        indicator = ret.rolling(20).std().fillna(0)
+        part1.loc[index1] = pd.DataFrame(indicator).loc[index1]
+        part2.loc[index2] = pd.DataFrame(self.close).loc[index2]
+        result = np.maximum((part1 + part2) ** 2, 5)
+        alpha = result.rank(axis=0, pct=True)
+        alpha = alpha.iloc[:, 0]
+        return alpha
+
+    #################################################################
+    def alpha_011(self):
+        temp = ((self.close - self.low) - (self.high - self.close)) / (self.high - self.low)
+        result = temp * self.volume
+        alpha = result.rolling(6).sum()
+
+        return alpha
+
+    #################################################################
+    def alpha_012(self):
+        vwap10 = self.settle.rolling(10).sum() / 10
+        temp1 = self.open_price - vwap10
+        part1 = temp1.rank(axis=0, pct=True)
+        temp2 = (self.close - self.settle).abs()
+        part2 = -temp2.rank(axis=0, pct=True)
+        alpha = part1 * part2
+
+        return alpha
+
+    #################################################################
+    def alpha_013(self):
+        alpha = ((self.high - self.low) ** 0.5) - self.settle
+
+        return alpha
+
+    #################################################################
+    def alpha_014(self):
+        alpha = self.close - self.close.shift(5)
+
+        return alpha
+
+    #################################################################
+    def alpha_015(self):
+        result = self.open_price / self.close.shift() - 1
+        alpha = result.replace([np.inf, -np.inf], 0)
+
+        return alpha
+
+    #################################################################
+    def alpha_016(self):
+        temp1 = self.volume.rank(axis=0, pct=True)
+        temp2 = self.settle.rank(axis=0, pct=True)
+        part = temp1.rolling(5).corr(temp2).fillna(0)  #
+        part = part.replace([np.inf, -np.inf], 0)
+        alpha = -part.rolling(5).max()  # 序列按 axis=0排序后，加负号
+        return alpha
+
+    #################################################################
+    def alpha_017(self):
+        temp1 = self.settle.rolling(15).max()
+        temp2 = self.settle - temp1
+        part1 = temp2.rank(axis=0, pct=True)
+        part2 = self.close.diff(5)
+        alpha = part1 * part2
+
+        return alpha
+
+    #################################################################
+    def alpha_018(self):
+        delay5 = self.close.shift(5)
+        alpha = self.close / delay5
+
+        return alpha
+
+    #################################################################
+    def alpha_019(self):
+        delay5 = self.close.shift(5)
+        condition1 = (self.close < delay5)
+        condition3 = (self.close > delay5)
+        index1 = self.close[condition1].index.tolist()
+        index2 = self.close[condition3].index.tolist()
+        result = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        result.loc[index1] = pd.Series((self.close[condition1] - delay5[condition1]) / delay5[condition1])
+        result.loc[index2] = pd.Series((self.close[condition3] - delay5[condition3]) / self.close[condition3])
+
+        return result
+
+    #################################################################
+    def alpha_020(self):
+        delay6 = self.close.shift(6)
+        result = (self.close - delay6) * 100 / delay6
+
+        return result
+
+    #################################################################
+    def alpha_021(self):
+        close_mean = self.close.rolling(6).mean()
+
+        def slope(A):
+            B = np.arange(1, 7)  # 等差S
+            slope, intercept, r_value, p_value, std_err = sp.stats.linregress(B, A)
+            if p_value > 0.05:
+                slope = 0
+            return slope
+
+        alpha = close_mean.rolling(6).apply(slope, raw=True)
+        return alpha
+
+    def alpha_022(self):
+        part1 = (self.close - self.close.rolling(6).mean()) / self.close.rolling(6).mean()
+        temp = (self.close - self.close.rolling(6).mean()) / self.close.rolling(6).mean()
+        part2 = temp.shift(3)
+        result = part1 - part2
+        alpha = result.ewm(alpha=1.0 / 12).mean()
+        return alpha
+
+    ##################################################################
+
+    def alpha_023(self):
+        condition1 = (self.close > self.close.shift())
+        indicator = self.close.rolling(20).std()
+        index1 = self.close[condition1].index.tolist()
+        temp1 = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        temp1.loc[index1] = pd.Series(indicator).loc[condition1]
+        index2 = self.close[~condition1].index.tolist()
+        temp2 = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        temp2.loc[index2] = pd.Series(indicator).loc[~condition1]
+        part1 = temp1.ewm(alpha=1.0 / 20).mean()
+        part2 = temp2.ewm(alpha=1.0 / 20).mean()
+        alpha = part1 * 100 / (part1 + part2)
+
+        return alpha
+
+    ##################################################################
+    def alpha_024(self):
+        delay5 = self.close.shift(5)
+        result = self.close - delay5
+        alpha = result.ewm(alpha=1.0 / 5).mean()
+
+        return alpha
+
+    ########################################################################
+
+    def alpha_025(self):
+        part1 = (self.close.diff(7)).rank(axis=0, pct=True)
+        temp = self.volume / self.volume.rolling(20).mean()
+
+        temp1 = temp.rolling(9).apply(self.func_decaylinear, raw=True)
+        ret = self.close.pct_change()
+        temp2 = ret.rolling(250, min_periods=30).sum()
+        rank_sum_ret = temp2.rank(pct=True)
+        part2 = 1 - temp1.rank()
+        part3 = 1 + rank_sum_ret
+        alpha = -part1 * part2 * part3
+        return alpha
+
+    ##################################################################
+
+    def alpha_026(self):
+        part1 = self.close.rolling(7).sum() / 7 - self.close
+        delay5 = self.close.shift(5)
+        part2 = self.settle.rolling(230, min_periods=30).corr(delay5).fillna(0)
+        alpha = part1 + part2
+        return alpha
+
+    ##################################################################
+    # def alpha_027(self):
+    #     # 公式表达不清楚
+    #     return 0
+    #
+    # ##################################################################
+    def alpha_028(self):
+        temp1 = self.close - self.low.rolling(9).min()
+        temp2 = self.high.rolling(9).max() - self.low.rolling(9).min()
+        part1 = 3 * temp1 * 100 / temp2.ewm(alpha=1.0 / 3).mean()
+        temp3 = temp1 * 100 / temp2.ewm(alpha=1.0 / 3).mean()
+        part2 = 2 * temp3.ewm(alpha=1.0 / 3).mean()
+        alpha = part1 - part2
+
+        return alpha
+
+    #################################################################
+    def alpha_029(self):
+        delay6 = self.close.shift(6)
+        alpha = (self.close - delay6) * self.volume / delay6
+
+        return alpha
+
+    ##################################################################
+    # def alpha_030(self):
+    #     # 公式表达不清楚
+    #     return 0
+    #
+    ##################################################################
+    def alpha_031(self):
+        alpha = (self.close - self.close.rolling(12).mean()) * 100 / self.close.rolling(12).mean()
+
+        return alpha
+
+    #################################################################
+    def alpha_032(self):
+        temp1 = self.high.rank(axis=0, pct=True)
+        temp2 = self.volume.rank(axis=0, pct=True)
+        temp3 = temp1.rolling(3).corr(temp2).fillna(0)
+        temp3 = temp3.replace([np.inf, -np.inf, np.nan], 0)
+        result = temp3.rank(axis=0, pct=True)
+        alpha = -result.rolling(3).sum()
+        return alpha
+
+    #################################################################
+    def alpha_033(self):
+        ret = self.close.pct_change()
+        temp1 = self.low.rolling(5).min()  # TS_MIN
+        part1 = temp1.shift(5) - temp1
+
+        temp2 = (ret.rolling(240, min_periods=30).sum() - ret.rolling(20).sum()) / 220
+        part2 = temp2.rank(axis=0, pct=True)
+
+        part3 = self.volume.rolling(5).apply(self.func_rank, raw=True)  # TS_RANK
+
+        alpha = part1 + part2 + part3
+        return alpha
+
+    #################################################################
+    def alpha_034(self):
+        alpha = self.close.rolling(12).mean() / self.close
+
+        return alpha
+
+    #################################################################
+    def alpha_035(self):
+        temp1 = self.open_price.diff()
+        part1 = temp1.rolling(15).apply(self.func_decaylinear, raw=True)
+        part1 = part1.rank(axis=0, pct=True)
+
+        temp2 = 0.65 * self.open_price + 0.35 * self.open_price
+        temp2 = temp2.rolling(17).corr(self.volume).fillna(0)
+        part2 = temp2.rolling(7).apply(self.func_decaylinear, raw=True)
+
+        alpha = np.minimum(part1, -part2)
+        alpha = alpha.replace([np.inf, -np.inf], 0)
+
+        return alpha
+
+    #################################################################
+    def alpha_036(self):
+        temp1 = self.volume.rank(axis=0, pct=True)
+        temp2 = self.settle.rank(axis=0, pct=True)
+        part1 = temp1.rolling(6).corr(temp2).fillna(0)
+        result = part1.rolling(2).sum()
+        alpha = result.rank(axis=0, pct=True)
+
+        return alpha
+
+    #################################################################
+    def alpha_037(self):
+        ret = self.close.pct_change()
+        temp = self.open_price.rolling(5).sum() * ret.rolling(5).sum()
+        part1 = temp.rank(axis=0, pct=True)
+        part2 = temp.shift(10)
+        alpha = -part1 - part2
+        return alpha
+
+    #################################################################
+    # def alpha_038(self):
+    #    sum_20 = self.high.rolling(20).sum() / 20
+    #    delta2 = self.high.diff(2)
+    #    condition = (sum_20 < self.high)
+    #    temp = pd.DataFrame(np.zeros(self.close.shape), index=self.close.index)
+    #    index = self.close[condition].index.tolist()
+    #    temp.loc[index] = pd.DataFrame(-delta2).loc[condition]
+    #    alpha = temp.iloc[:, -1]
+    #    return alpha
+
+    #################################################################
+    def alpha_039(self):
+        temp1 = self.close.diff(2)
+        part1 = temp1.rolling(8).apply(self.func_decaylinear, raw=True)
+        part1 = part1.rank(axis=0, pct=True)
+
+        temp2 = 0.3 * self.settle + 0.7 * self.open_price
+        volume_180 = self.volume.rolling(180, min_periods=30).mean()
+        sum_vol = volume_180.rolling(37).sum()
+        temp3 = temp2.rolling(14).corr(sum_vol).fillna(0)
+        part2 = temp3.rolling(12).apply(self.func_decaylinear, raw=True)
+        part2.rank(axis=0, pct=True)
+        result = part1 - part2
+        alpha = - result
+        alpha = alpha.replace([np.inf, -np.inf], 0)
+
+        return alpha
+
+    #################################################################
+    def alpha_040(self):
+        delay1 = self.close.shift()
+        condition = (self.close > delay1)
+        vol = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        vol1 = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        index1 = self.close[condition].index.tolist()
+        index2 = self.close[~condition].index.tolist()
+        vol.loc[index1] = pd.Series(self.volume)[condition]
+        vol_sum = vol.rolling(26).sum()
+        vol1.loc[index2] = pd.Series(self.volume)[~condition]
+        vol1_sum = vol1.rolling(26).sum()
+        result = 100 * vol_sum / vol1_sum
+        alpha = result.replace([np.inf, np.inf], 0)
+        return alpha
+
+    #################################################################
+    # def alpha_041(self):
+    #   delta_avg = self.settle.diff(3)
+    #    part = np.maximum(delta_avg, 5)
+    #    alpha = -part.rank(axis=0, pct=True)
+
+    #   return alpha
+
+    ##################################################################
+    def alpha_042(self):
+        part1 = self.high.rolling(10).corr(self.volume).fillna(0)
+        part2 = self.high.rolling(10).std()
+        part2 = part2.rank(axis=0, pct=True)
+        result = -part1 * part2
+        alpha = result.replace([np.inf, -np.inf], 0)
+
+        return alpha
+
+    #################################################################
+    def alpha_043(self):
+        delay1 = self.close.shift()
+        condition1 = (self.close > delay1)
+        condition2 = (self.close < delay1)
+        index1 = self.close[condition1].index.tolist()
+        index2 = self.close[condition2].index.tolist()
+        temp1 = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        temp2 = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        temp1.loc[index1] = pd.Series(self.volume)[condition1]
+        temp2.loc[index2] = -pd.Series(self.volume)[condition2]
+        result = temp1 + temp2
+        alpha = result.rolling(6).sum()
+
+        return alpha
+
+    #################################################################
+    def alpha_044(self):
+
+        temp1 = self.low.rolling(7).corr(self.volume.rolling(10).mean()).fillna(0)
+        part1 = temp1.rolling(6).apply(self.func_decaylinear, raw=True)
+        part1 = part1.rolling(4).apply(self.func_rank, raw=True)
+
+        temp2 = self.settle.diff(3)
+        part2 = temp2.rolling(10).apply(self.func_decaylinear, raw=True)
+        part2 = part2.rolling(15).apply(self.func_rank, raw=True)
+        alpha = part1 + part2
+        return alpha
+
+    #################################################################
+    def alpha_045(self):
+        temp1 = self.close * 0.6 + self.open_price * 0.4
+        part1 = temp1.diff()
+        part1 = part1.rank(axis=0, pct=True)
+        temp2 = self.volume.rolling(150, min_periods=30).mean()
+        part2 = self.settle.rolling(15).corr(temp2).fillna(0)
+        part2 = part2.rank(axis=0, pct=True)
+        alpha = part1 * part2
+
+        return alpha
+
+    #################################################################
+    def alpha_046(self):
+        part1 = self.close.rolling(3).mean()
+        part2 = self.close.rolling(6).mean()
+        part3 = self.close.rolling(12).mean()
+        part4 = self.close.rolling(24).mean()
+        alpha = (part1 + part2 + part3 + part4) * 0.25 / self.close
+
+        return alpha
+
+    #################################################################
+    def alpha_047(self):
+        part1 = self.high.rolling(6).max() - self.close
+        part2 = self.high.rolling(6).max() - self.low.rolling(6).min()
+        alpha = (100 * part1 / part2).ewm(alpha=1.0 / 9).mean()
+        return alpha
+
+        ##################################################################
+
+    def alpha_048(self):
+        indicator1 = (self.close - self.close.shift()).fillna(0)
+        indicator2 = (self.close.shift() - self.close.shift(2)).fillna(0)
+        indicator3 = (self.close.shift(2) - self.close.shift(3)).fillna(0)
+        part = np.sign(indicator1) + np.sign(indicator2) + np.sign(indicator3)
+
+        alpha = - part * self.volume.rolling(5).sum() / self.volume.rolling(20).sum()
+
+        return alpha
+
+    #################################################################
+    def alpha_049(self):
+        delay_high = self.high.shift()
+        delay_low = self.low.shift()
+        condition1 = (self.high + self.low >= delay_high + delay_low)
+        condition2 = (self.high + self.low <= delay_high + delay_low)
+        part1 = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        part1.loc[~condition1] = np.maximum(np.abs(self.high - delay_high), np.abs(self.low - delay_low))[~condition1]
+        part2 = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        part2.loc[~condition2] = np.maximum(np.abs(self.high - delay_high), np.abs(self.low - delay_low))[~condition2]
+
+        alpha = part1.rolling(12).sum() / (part1.rolling(12).sum() + part2.rolling(12).sum())
+
+        return alpha
+
+    ##################################################################
+    # def alpha_050(self):
+    #     # 表达式无意义
+    #     return 0
+    #
+    # ##################################################################
+    # def alpha_051(self):
+    #     # 表达式无意义
+    #     return 0
+    #
+    ##################################################################
+    def alpha_052(self):
+        delay = ((self.high + self.low + self.close) / 3).shift()
+        part1 = np.maximum(self.high - delay, 0)
+
+        part2 = np.maximum(delay - self.low, 0)
+        alpha = part1.rolling(26).sum() / part2.rolling(26).sum() * 100
+        return alpha
+
+    #################################################################
+    def alpha_053(self):
+        delay = self.close.shift()
+        condition = self.close > delay
+        indicator = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        indicator.loc[condition] = pd.Series(np.ones(self.close.shape), index=self.close.index)[condition]
+        alpha = indicator.rolling(12).sum() * 100 / 12
+
+        return alpha
+
+    #################################################################
+    def alpha_054(self):
+        part1 = (self.close - self.open_price).abs()
+        part1 = part1.std()
+        part2 = (self.close - self.open_price)
+        part3 = self.close.rolling(10).corr(self.open_price).fillna(0)
+        result = part1 + part2 + part3
+        alpha = - result.rank(axis=0, pct=True)
+
+        return alpha
+
+    ##################################################################
+    # def alpha_055(self):
+    #     # 尚未实现
+    #     return 0
+    #
+    ##################################################################
+    # def alpha_056(self):
+    #    part1 = self.open_price - self.open_price.rolling(12).min()
+    #    part1 = part1.rank(axis=0, pct=True)
+    #    temp1 = (self.high + self.low) / 2
+    #    temp1 = temp1.rolling(19).sum()
+    #    temp = self.volume.rolling(40, min_periods=30).mean()
+    #    temp2 = temp.rolling(19).sum()
+    #    part2 = temp1.rolling(13).corr(temp2).fillna(0)
+    #    part2 = (part2.rank(pct=True)) ** 5
+    #    part2 = part2.rank(pct=True)
+
+    #   part1[part1 < part2] = 1  # 先令part1<part2的值为1，再令part1中不为1的值为0，最后替换掉NaN的值
+    #    part1 = part1.apply(lambda x: 0 if x < 1 else None)
+    #    alpha = part1.fillna(1)
+    #    return alpha
+
+    #################################################################
+    def alpha_057(self):
+        part1 = self.close - self.low.rolling(9).min()
+        part2 = self.high.rolling(9).max() - self.low.rolling(9).min()
+        alpha = (100 * part1 / part2).ewm(alpha=1.0 / 3).mean()
+
+        return alpha
+
+    #################################################################
+    def alpha_058(self):
+        delay = self.close.shift()
+        condition = self.close > delay
+        indicator = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        indicator.loc[condition] = pd.Series(np.ones(self.close.shape), index=self.close.index).loc[condition]
+        alpha = indicator.rolling(20).sum() * 100 / 20
+        return alpha
+
+    #################################################################
+
+    def alpha_059(self):
+        delay = self.close.shift()
+        condition1 = (self.close > delay)
+        condition2 = (self.close <= delay)
+        condition3 = (self.close == delay)
+        part1 = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        part2 = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        part3 = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        part1.loc[condition1] = np.minimum(self.low[condition1], delay[condition1])
+        part2.loc[condition2] = np.maximum(self.high[condition2], delay[condition2])
+        part3.loc[~condition3] = self.close
+        result = part3 - part1 - part2
+        alpha = result.rolling(20).sum()
+        return alpha
+
+    #################################################################
+    def alpha_060(self):
+        part1 = (self.close - self.low) - (
+                    self.high - self.close)
+        part2 = self.high - self.low
+        result = self.volume * part1 / part2
+        alpha = result.rolling(20).sum()
+        return alpha
+
+    #################################################################
+    def alpha_061(self):
+
+        temp1 = self.settle.diff()
+        part1 = temp1.rolling(12).apply(self.func_decaylinear, raw=True)
+        part1 = part1.rank(axis=0, pct=True)
+
+        temp2 = self.low
+        vol_80 = self.volume.rolling(80, min_periods=30).mean()
+        temp2 = temp2.rolling(8).corr(vol_80).fillna(0)
+        temp2 = temp2.rank(axis=0, pct=1)
+        part2 = temp2.rolling(17).apply(self.func_decaylinear, raw=True)
+        part2 = - part2.rank(axis=0, pct=1)
+
+        alpha = np.maximum(part1, part2)
+        alpha = alpha.replace([np.inf, -np.inf], 0)  # 去除inf number
+
+        return alpha
+
+    #################################################################
+    def alpha_062(self):
+        volume_rank = self.volume.rank(axis=0, pct=1)
+        result = self.high.rolling(5).corr(volume_rank)
+        alpha = -result
+        return alpha
+
+        #################################################################
+
+    def alpha_063(self):
+        part1 = np.maximum(self.close - self.close.shift(), 0)
+        part1 = part1.ewm(alpha=1.0 / 6).mean()
+        part2 = (self.close - self.close.shift()).abs()
+        part2 = part2.ewm(alpha=1.0 / 6).mean()
+        alpha = part1 * 100 / part2
+
+        return alpha
+
+    #################################################################
+    def alpha_064(self):
+
+        settle_rank = self.settle.rank(axis=0, pct=1)
+        vol_rank = self.volume.rank(axis=0, pct=1)
+        temp1 = settle_rank.rolling(4).corr(vol_rank).fillna(0)
+        part1 = temp1.rolling(4).apply(self.func_decaylinear, raw=True)
+        part1 = part1.rank(axis=0, pct=True)
+
+        temp2 = self.close.rank(axis=0, pct=1)
+        vol_60 = self.volume.rolling(60, min_periods=30).mean()
+        temp2 = temp2.rolling(4).corr(vol_60)
+        temp2 = np.maximum(temp2, 13)
+        part2 = temp2.rolling(14).apply(self.func_decaylinear, raw=True)
+        part2 = -part2.rank(axis=0, pct=1)
+        alpha = np.maximum(part1, part2)
+        alpha = alpha.replace([np.inf, -np.inf], 0)
+        return alpha
+
+    #################################################################
+    def alpha_065(self):
+        part1 = self.close.rolling(6).mean()
+        alpha = part1 / self.close
+        return alpha
+
+    #################################################################
+    def alpha_066(self):
+        part1 = self.close.rolling(6).mean()
+        alpha = 100*(self.close - part1) / part1
+        return alpha
+
+    #################################################################
+    def alpha_067(self):
+        temp1 = self.close - self.close.shift()
+        part1 = np.maximum(temp1, 0)
+        part1 = part1.ewm(alpha=1.0 / 24).mean()
+        temp2 = temp1.abs()
+        part2 = temp2.ewm(alpha=1.0 / 24).mean()
+        alpha = part1 * 100 / part2
+
+        return alpha
+
+    #################################################################
+    def alpha_068(self):
+        part1 = (self.high + self.low) / 2 - self.high.shift()
+        part2 = 0.5 * self.low.shift() * (self.high - self.low) / self.volume
+        result = part1 + part2
+        alpha = result.ewm(alpha=2.0 / 15).mean()
+
+        return alpha
+
+    ##################################################################
+    # def alpha_069(self):
+    #     # 尚未实现
+    #     return 0
+    #
+    ##################################################################
+    def alpha_070(self):
+        amount = self.volume * self.settle
+        alpha = amount.rolling(6).std()
+        return alpha
+
+    ############################################################################
+    def alpha_071(self):
+        data = (self.close - self.close.rolling(24).mean()) / self.close.rolling(24).mean()
+        alpha = data * 100
+        return alpha
+
+    ############################################################################
+    def alpha_072(self):
+        data1 = self.high.rolling(6).max() - self.close
+        data2 = self.high.rolling(6).max() - self.low.rolling(6).min()
+        alpha = (data1 / data2 * 100).ewm(alpha=1 / 15).mean()
+        return alpha
+
+    ############################################################################
+    def alpha_073(self):
+
+        temp1 = self.close.rolling(10).corr(self.volume).fillna(0)
+        part1 = temp1.rolling(16).apply(self.func_decaylinear, raw=True)
+        part2 = part1.rolling(4).apply(self.func_decaylinear, raw=True)
+        indicator1 = part2.rolling(5).apply(self.func_rank, raw=True)
+
+        part3 = (self.volume.rolling(30).mean()).rolling(4).corr(self.settle)
+        part4 = part3.rolling(3).apply(self.func_decaylinear, raw=True)
+        indicator2 = part4.rank(axis=0, pct=1)
+        alpha = - (indicator1 - indicator2)
+        return alpha
+
+    ############################################################################
+    def alpha_074(self):
+        data1 = (self.low * 0.35 + self.settle * 0.65).rolling(20).sum()
+        data2 = self.volume.rolling(40, min_periods=30).mean()
+        data3 = data2.rolling(20).sum()
+        rank1 = data1.rolling(7).corr(data3).fillna(0).rank(axis=0, pct=True)
+        data4 = self.settle.rank(axis=0, pct=True)
+        data5 = self.volume.rank(axis=0, pct=True)
+        rank2 = data4.rolling(6).corr(data5).fillna(0).rank(axis=0, pct=True)
+        alpha = rank1 + rank2
+        return alpha
+
+    # ############################################################################
+    # def alpha_075(self):
+    #     benchmark不明确 未实现
+    #     benchmark = get_price('000001.SH', None, end_date, '1d', ['open', 'close'], False, None, 50)
+    #     condition = benchmark['close'] < benchmark['open']
+    #     data1 = benchmark[condition]
+    #     numbench = len(data1)
+    #     timelist = data1.index.tolist()
+    #     data2 = pd.merge(self.close, data1, left_index=True, right_index=True).drop(['close', 'open'], axis=1)
+    #     data3 = pd.merge(self.open_price, data1, left_index=True, right_index=True).drop(['close', 'open'], axis=1)
+    #     data4 = data2[data2 > data3]
+    #     alpha = 1 - data4.isnull().sum(axis=0) / numbench
+    #     return alpha
+    #
+    #############################################################################
+    def alpha_076(self):
+        data1 = abs((self.close / self.close.shift()) - 1) / self.volume
+        part1 = data1.rolling(20).std()
+        part2 = data1.rolling(20).mean()
+        alpha = part1/part2
+
+        return alpha
+
+    ############################################################################
+    def alpha_077(self):
+        data1 = (self.high + self.low) / 2 + self.high - (self.settle + self.high)
+        temp1 = data1.rolling(20).apply(self.func_decaylinear, raw=True)
+        rank1 = temp1.rank(axis=0, pct=True)
+        vol_40 = self.volume.rolling(40, min_periods=30).mean()
+        data2 = ((self.high + self.low) / 2).rolling(3).corr(vol_40)
+        temp2 = data2.rolling(6).apply(self.func_decaylinear, raw=True)
+        rank2 = temp2.rank(axis=0, pct=True)
+        alpha = np.minimum(rank1, rank2)
+        return alpha
+
+    ############################################################################
+    def alpha_078(self):
+        temp1 = (self.high + self.low + self.close) / 3
+        data1 = temp1 - temp1.rolling(12).mean()
+        data2 = abs(self.close - temp1.rolling(12).mean())
+        data3 = data2.rolling(12).mean() * 0.015
+        alpha = data1 / data3
+        return alpha
+
+    ############################################################################
+    def alpha_079(self):
+        temp1 = np.maximum((self.close - self.close.shift()), 0)
+        data1 = temp1.ewm(alpha=1 / 12).mean()
+        temp2 = abs(self.close - self.close.shift())
+        data2 = temp2.ewm(alpha=1 / 12).mean()
+        alpha = data1 / data2 * 100
+        return alpha
+
+    ############################################################################
+    def alpha_080(self):
+        alpha = (self.volume - self.volume.shift(5)) / self.volume.shift(5) * 100
+        return alpha
+
+    ############################################################################
+    def alpha_081(self):
+        alpha = self.volume.ewm(alpha=2.0 / 21).mean()
+        return alpha
+
+    ############################################################################
+    def alpha_082(self):
+        part1 = self.high.rolling(6).max() - self.close
+        part2 = self.high.rolling(6).max() - self.low.rolling(6).min()
+        alpha = (100 * part1 / part2).ewm(alpha=1.0 / 20).mean()
+
+        return alpha
+
+    ############################################################################
+    def alpha_083(self):
+        part1 = self.high.rank(axis=0, pct=True)
+        part2 = self.volume.rank(axis=0, pct=True)
+        result = part1.rolling(5).cov(part2)
+        alpha = -result
+        return alpha
+
+    ############################################################################
+    def alpha_084(self):
+        condition1 = (self.close > self.close.shift())
+        condition2 = (self.close < self.close.shift())
+        temp = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        temp.loc[condition1] = self.volume[condition1]
+        temp.loc[condition2] = -self.volume[condition2]
+        alpha = temp.rolling(20).sum()
+        return alpha
+
+    ############################################################################
+    def alpha_085(self):
+        temp1 = self.volume / self.volume.rolling(20).mean()
+        part1 = temp1.rolling(20).apply(self.func_rank, raw=True)
+
+        temp2 = -self.close.diff(7)
+        part2 = temp2.rolling(8).apply(self.func_rank, raw=True)
+
+        alpha = part1 * part2
+        return alpha
+
+    ############################################################################
+    # def alpha_086(self):
+
+        # delay10 = self.close.shift(10)
+        # delay20 = self.close.shift(20)
+        # result = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+        # indicator1 = pd.Series(-np.ones(self.close.shape), index=self.close.index)
+        # indicator2 = pd.Series(np.ones(self.close.shape), index=self.close.index)
+
+        # temp = (delay20 - delay10) / 10 - (delay10 - self.close) / 10
+        # indicator3 = -(self.close - self.close.shift())
+        # condition1 = (temp > 0.25)
+        # condition2 = (temp < 0)
+
+        # result.loc[condition1] = indicator1.loc[condition1]
+        # result.loc[condition2] = indicator2.loc[condition2]
+        # result.loc[(~condition1) & (~condition2)] = indicator3.loc[(~condition1)&(~condition2)]
+        # alpha = result
+
+        # return alpha
+
+    ############################################################################
+    def alpha_087(self):
+
+        temp1 = self.settle.diff(4)
+        part1 = temp1.rolling(7).apply(self.func_decaylinear, raw=True)
+        part1 = part1.rank(axis=0, pct=True)
+
+        temp2 = self.low - self.settle
+        temp3 = self.open_price - 0.5 * (self.high + self.low)
+        temp2 = temp2 / temp3
+        temp2 = temp2.replace([np.inf, -np.inf], 0)
+        temp2 = temp2.fillna(0)
+        part2 = temp2.rolling(11).apply(self.func_decaylinear, raw=True)
+        part3 = part2.rolling(7).apply(self.func_rank, raw=True)
+        alpha = - (part1 + part3)
+
+        return alpha
+
+    ########################################################################
+
+    def alpha_088(self):
+        data1 = self.close.shift(20)
+        alpha = ((self.close - data1) / data1) * 100
+
+        return alpha
+    ###################################################################################################
+
+    def alpha_089(self):
+        data1 = self.close.ewm(alpha=2.0/13).mean()
+        data2 = self.close.ewm(alpha=2.0/27).mean()
+        data3 = (data1 - data2).ewm(alpha=2.0/10).mean()
+        alpha = (data1 - data2 - data3) * 2
+
+        return alpha
+    ######################################################################################################
+
+    def alpha_090(self):
+
+        data1 = self.settle.rank(axis=0, pct=True)
+        data2 = self.volume.rank(axis=0, pct=True)
+        corr = data1.rolling(5).corr(data2)
+        alpha = - corr.rank(axis=0, pct=True)
+
+        return alpha
+    ################################################################################################
+
+    def alpha_091(self):
+        temp1 = self.close - self.close.rolling(5).max()
+        rank1 = temp1.rank(axis=0, pct=True)
+        vol_40 = self.volume.rolling(40, min_periods=30).mean()
+        temp2 = vol_40.rolling(5).corr(self.low)
+        rank2 = temp2.rank(pct=True)
+        alpha = - rank1 * rank2
+
+        return alpha
+    ####################################################################################################
+
+    def alpha_092(self):
+        delta = (self.close * 0.35 + self.settle * 0.65) - (self.close * 0.35 + self.settle * 0.65).shift(2)
+        rank1 = (delta.rolling(3).apply(self.func_decaylinear, raw=True)).rank(axis=0, pct=True)
+        vol_180 = self.volume.rolling(180, min_periods=30).mean()
+        temp1 = vol_180.rolling(13).corr(self.close).fillna(0)
+        temp2 = abs(temp1)
+        temp3 = temp2.rolling(5).apply(self.func_decaylinear, raw=True)
+        rank2 = temp3.rolling(15).apply(self.func_rank, raw=True)
+        condition = (rank1 > rank2)
+        rank2.loc[condition] = rank1.loc[condition]
+        alpha = rank2
+
+        return alpha
+    #############################################################################
+
+    def alpha_093(self):
+        cond = self.open_price >= self.open_price.shift()
+        data1 = self.open_price - self.low
+        data2 = self.open_price - self.open_price.shift()
+        cond_max = (data1 > data2)
+        data2[cond_max] = data1[cond_max]
+        data2[cond] = 0
+        alpha = data2.rolling(20).sum()
+
+        return alpha
+
+    ###########################################################################
+
+    def alpha_094(self):
+        cond1 = self.close > self.close.shift()
+        cond2 = self.close < self.close.shift()
+        value = -self.volume
+        value[~cond2] = 0
+        value[cond1] = self.volume[cond1]
+        alpha = value.rolling(30).sum()
+
+        return alpha
+    #############################################################################
+
+    def alpha_095(self):
+        temp = self.settle * self.volume
+        alpha = temp.rolling(20).std()
+        return alpha
+
+    ###########################################################################
+
+    def alpha_096(self):
+        temp1 = self.close - self.low.rolling(9).min()
+        temp2 = self.high.rolling(9).max() - self.low.rolling(9).min()
+        temp = 100 * temp1 / temp2
+        sma1 = temp.ewm(alpha=1.0 / 3).mean()
+        alpha = sma1.ewm(alpha=1.0 / 3).mean()
+        return alpha
+
+    ###########################################################################
+
+    def alpha_097(self):
+        alpha = self.volume.rolling(10).std()
+
+        return alpha
+
+    ###########################################################################
+
+    def alpha_098(self):
+        temp1 = self.close.rolling(100, min_periods=30).mean()
+        cond = ((temp1 - temp1.shift(100)) / self.close.shift(100)).fillna(0) <= 0.05
+        left_value = -(self.close - self.close.rolling(100, min_periods=30).min())
+        right_value = -(self.close - self.close.shift(3))
+        right_value[cond] = left_value[cond]
+        alpha = right_value
+
+        return alpha
+
+    ###########################################################################
+
+    def alpha_099(self):
+        temp1 = self.close.rank(axis=0, pct=True)
+        temp2 = self.volume.rank(axis=0, pct=True)
+        alpha = -temp1.rolling(5).cov(temp2)
+        alpha = alpha.rank(axis=0, pct=True)
+
+        return alpha
+
+    ###########################################################################
+
+    def alpha_100(self):
+        alpha = self.volume.rolling(20).std()
+
+        return alpha
+
+    ###########################################################################
+
+    # def alpha_101(self):
+    #   temp1 = self.volume.rolling(30).mean()
+    #    temp2 = temp1.rolling(37).sum()
+    #    temp3 = self.close.rolling(15).corr(temp2).fillna(0)
+    #    rank1 = temp3.rank(axis=0, pct=True)
+    #    rank2 = (self.high * 0.1 + self.settle * 0.9).rank(axis=0, pct=True)
+    #    rank3 = self.volume.rank(axis=0, pct=True)
+    #    rank4 = (rank2.rolling(11).corr(rank3)).rank(axis=0, pct=True).fillna(0)
+    #    indicator = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+    #    indicator[(rank1 < rank4)] = -pd.Series(np.ones(self.close.shape), index=self.close.index)[(rank1 < rank4)]
+    #    alpha = indicator
+
+    #    return alpha
+
+    ###########################################################################
+
+    def alpha_102(self):
+        max_cond = (self.volume - self.volume.shift()) > 0
+        max_data = self.volume - self.volume.shift()
+        max_data[~max_cond] = 0
+        sma1 = max_data.ewm(alpha=1.0 / 6).mean()
+        temp = (self.volume - self.volume.shift()).abs()
+        sma2 = temp.ewm(alpha=1.0 / 6).mean()
+        alpha = sma1 / sma2 * 100
+        return alpha
+
+    ###########################################################################
+
+    def alpha_103(self):
+        alpha = (20 - self.low.rolling(20).apply(self.func_lowday, raw=True)) / 20 * 100
+
+        return alpha
+
+    ###########################################################################
+
+    def alpha_104(self):
+        corr = self.high.rolling(5).corr(self.volume).fillna(0)
+        alpha = -(corr - corr.shift(5)) * ((self.close.rolling(20).std()).rank(axis=0, pct=True))
+
+        return alpha
+    ###########################################################################
+
+    def alpha_105(self):
+        alpha = - (self.open_price.rank(axis=0, pct=True)).rolling(10).corr(self.volume.rank(axis=0, pct=1)).fillna(0)
+
+        return alpha
+    ###########################################################################
+
+    def alpha_106(self):
+        alpha = self.close - self.close.shift(20)
+
+        return alpha
+    ###########################################################################
+
+    def alpha_107(self):
+        rank1 = -(self.open_price - self.high.shift()).rank(axis=0, pct=True)
+        rank2 = (self.open_price - self.close.shift()).rank(axis=0, pct=True)
+        rank3 = (self.open_price - self.low.shift()).rank(axis=0, pct=True)
+        alpha = rank1 * rank2 * rank3
+
+        return alpha
+    ###########################################################################
+
+    def alpha_108(self):
+        # ((RANK((HIGH-MIN(HIGH,2)))^RANK(CORR((VWAP),(MEAN(VOLUME,120)),6)))*-1) #
+        min_cond = (self.high > 2)
+        data = pd.Series.copy(self.high)
+        data.loc[min_cond] = 2
+        rank1 = (self.high - data).rank(axis=0, pct=True)
+        rank2 = (self.settle.rolling(window=6).corr(self.volume.rolling(window=120, min_periods=30).mean())).rank(
+            axis=0, pct=True)
+        alpha = - rank1 ** rank2
+
+        return alpha
+    ###########################################################################
+
+    def alpha_109(self):
+        # SMA(HIGH-LOW,10,2)/SMA(SMA(HIGH-LOW,10,2),10,2)#
+        data = self.high - self.low
+        sma1 = data.ewm(alpha=2.0 / 10).mean()
+        sma2 = sma1.ewm(alpha=2.0 / 10).mean()
+        alpha = sma1 / sma2
+
+        return alpha
+
+        ###########################################################################
+
+    # def alpha_110(self):
+    #     # SUM(MAX(0,HIGH-DELAY(CLOSE,1)),20)/SUM(MAX(0,DELAY(CLOSE,1)-LOW),20)*100 #
+    #     data1 = self.high - self.close.shift()
+    #     data2 = self.close.shift() - self.low
+    #     # max_cond1 = (data1 < 0)
+    #     # max_cond2 = (data2 < 0)
+    #     # data1[max_cond1] = 0
+    #     # data2[max_cond2] = 0
+    #     data1 = np.maximum(data1, 0)
+    #     data2 = np.maximum(data2, 0)
+    #
+    #     sum1 = data1.rolling(window=20).sum()
+    #     sum2 = data2.rolling(window=20).sum()
+    #     alpha = sum1 / sum2 * 100
+    #
+    #     return alpha
+
+    ###########################################################################
+
+    def alpha_111(self):
+        # sma(vol*((close-low)-(high-close))/(high-low),11,2)-sma(vol*((close-low)-(high-close))/(high-low),4,2)
+        data1 = self.volume * ((self.close - self.low) - (self.high - self.close)) / (self.high - self.low)
+        x = data1.ewm(alpha=2.0/11).mean()
+        y = data1.ewm(alpha=2.0/4).mean()
+        alpha = x - y
+
+        return alpha
+
+    def alpha_112(self):
+        cond1 = self.close > self.close.shift()
+        cond2 = self.close < self.close.shift()
+        data1 = self.close - self.close.shift()
+        data2 = self.close - self.close.shift()
+        data1[~cond1] = 0
+        data2[~cond2] = 0
+        data2 = data2.abs()
+        sum1 = data1.rolling(window=12).sum()
+        sum2 = data2.rolling(window=12).sum()
+        alpha = (sum1 - sum2) / (sum1 + sum2) * 100
+
+        return alpha
+
+    def alpha_113(self):
+        # (-1*((rank((sum(delay(close,5),20)/20))*corr(close,volume,2))*rank(corr(sum(close,5),sum(close,20),2))))
+        data1 = self.close.shift(5)
+        rank1 = (data1.rolling(window=20).sum() / 20).rank(axis=0, pct=True)
+        corr1 = self.close.rolling(2).corr(self.volume).fillna(0)
+        data2 = self.close.rolling(window=5).sum()
+        data3 = self.close.rolling(window=20).sum()
+        corr2 = data2.rolling(2).corr(data3).fillna(0)
+        rank2 = corr2.rank(axis=0, pct=True)
+        alpha = - rank1 * corr1 * rank2
+
+        return alpha
+
+    def alpha_114(self):
+        # ((rank(delay(((high-low)/(sum(close,5)/5)),2))*rank(rank(volume)))/(((high-low)/(sum(close,5)/5))/(vwap-close)))
+        data1 = (self.high - self.low) / (self.close.rolling(window=5).sum() / 5)
+        rank1 = (data1.shift(2)).rank(axis=0, pct=True)
+        rank2 = ((self.volume.rank(axis=0, pct=True)).rank(axis=0, pct=True))
+        data2 = ((self.high - self.low) / (self.close.rolling(window=5).sum() / 5)) / (
+                    self.settle - self.close)
+        alpha = (rank1 * rank2) / data2
+
+        return alpha
+
+    def alpha_115(self):
+        # RANK(CORR(((HIGH*0.9)+(CLOSE*0.1)),MEAN(VOLUME,30),10))^RANK(CORR(TSRANK(((HIGH+LOW)/2),4),TSRANK(VOLUME,10),7)) #
+        data1 = self.high * 0.9 + self.close * 0.1
+        data2 = self.volume.rolling(window=30).mean()
+        rank1 = (data1.rolling(10).corr(data2)).rank(pct=True)
+        tsrank1 = ((self.high + self.low) / 2).rolling(4).apply(self.func_rank, raw=True)
+        tsrank2 = self.volume.rolling(10).apply(self.func_rank, raw=True)
+        rank2 = tsrank1.rolling(7).corr(tsrank2).rank(pct=True)
+        alpha = rank1 ** rank2
+
+        return alpha
+
+    def alpha_116(self):
+        # REGBETA(CLOSE,SEQUENCE,20) #
+        def slope(A):
+            B = np.arange(1, 21)  # 等差S
+            slope, intercept, r_value, p_value, std_err = sp.stats.linregress(B, A)
+            if p_value > 0.05:
+                slope = 0
+            return slope
+
+        alpha = self.close.rolling(20).apply(slope, raw=True)
+
+        return alpha
+
+    def alpha_117(self):
+        #######((tsrank(volume,32)*(1-tsrank(((close+high)-low),16)))*(1-tsrank(ret,32)))
+        data1 = self.close + self.high - self.low
+        data2 = 1 - data1.rolling(16).apply(self.func_rank, raw=True)
+        data3 = (self.volume.rolling(32)).apply(self.func_rank, raw=True)
+        ret = self.close.pct_change()
+        data4 = 1 - ret.rolling(32).apply(self.func_rank, raw=True)
+        alpha = data2 * data3 * data4
+
+        return alpha
+
+    def alpha_118(self):
+        ######sum(high-open,20)/sum((open-low),20)*100
+        data1 = self.high - self.open_price
+        data2 = self.open_price - self.low
+        data3 = data1.rolling(window=20).sum()
+        data4 = data2.rolling(window=20).sum()
+        alpha = (data3 / data4) * 100
+
+        return alpha
+
+    def alpha_119(self):
+        # (RANK(DECAYLINEAR(CORR(VWAP,SUM(MEAN(VOLUME,5),26),5),7))-RANK(DECAYLINEAR(TSRANK(MIN(CORR(RANK(OPEN),RANK(MEAN(VOLUME,15)),21),9),7),8)))
+        sum1 = (self.volume.rolling(window=5).mean()).rolling(window=26).sum()
+        corr1 = self.settle.rolling(window=5).corr(sum1).fillna(0)
+        rank1 = corr1.rolling(7).apply(self.func_decaylinear, raw=True)
+        rank2 = self.open_price.rank(axis=0, pct=True)
+        rank3 = (self.volume.rolling(window=15).mean()).rank(axis=0, pct=True)
+        temp1 = rank2.rolling(window=21).corr(rank3).fillna(0)
+        temp2 = temp1.rolling(window=9).min()
+        rank4 = temp2.rolling(window=8).apply(self.func_rank, raw=True)
+        rank5 = (rank4.rolling(8).apply(self.func_decaylinear, raw=True)).rank(axis=0, pct=True)
+        alpha = rank1 - rank5
+
+        return alpha
+
+    def alpha_120(self):
+        ###############(rank(vwap-close))/(rank(vwap+close))
+        data1 = (self.settle - self.close).rank(axis=0, pct=True)
+        data2 = (self.settle + self.close).rank(axis=0, pct=True)
+        alpha = data1 / data2
+
+        return alpha
+
+    def alpha_121(self):
+        rank1 = (self.settle - self.settle.rolling(12).min()).rank(axis=0, pct=True)
+        tsrank1 = self.settle.rolling(20).apply(self.func_decaylinear, raw=True)
+        tsrank2 = (self.volume.rolling(15).mean()).rolling(2).apply(self.func_decaylinear, raw=True)
+        corr1 = tsrank1.rolling(18).corr(tsrank2).fillna(0)
+        tsrank3 = corr1.rolling(3).apply(self.func_rank, raw=True)
+        alpha = -rank1**tsrank3
+
+        return alpha
+
+    def alpha_122(self):
+        ##### (SMA(SMA(SMA(LOG(CLOSE),13,2),13,2),13,2) - DELAY(SMA(SMA(SMA(LOG(CLOSE),13,2),13,2),13,2),1))
+        ##### / DELAY(SMA(SMA(SMA(LOG(CLOSE),13,2),13,2),13,2),1)
+        log_close = np.log(self.close)
+        temp = ((log_close.ewm(alpha=2.0/13).mean()).ewm(alpha=2.0/13).mean()).ewm(alpha=2.0/13).mean()
+        alpha = (temp - temp.shift()) / temp
+
+        return alpha
+
+    # def alpha_123(self):
+        #####((RANK(CORR(SUM(((HIGH+LOW)/2), 20), SUM(MEAN(VOLUME, 60), 20), 9)) < RANK(CORR(LOW, VOLUME, 6))) * -1)
+    #    data1 = ((self.high + self.low) / 2).rolling(20).sum()
+    #    data2 = (self.volume.rolling(window=60, min_periods=30).mean()).rolling(20).sum()
+    #    rank1 = data1.rolling(9).corr(data2).fillna(0).rank(axis=0, pct=True)
+    #    rank2 = self.low.rolling(6).corr(self.volume).fillna(0).rank(axis=0, pct=True)
+    #    alpha = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+    #    alpha[(rank1 < rank2)] = pd.Series(np.ones(self.close.shape), index=self.close.index)[(rank1 < rank2)] * (-1)
+
+    #   return alpha
+
+    def alpha_124(self):
+        ##### (CLOSE - VWAP) / DECAYLINEAR(RANK(TSMAX(CLOSE, 30)),2)
+        data1 = self.close.rolling(30).max().rank(axis=0, pct=True)
+        data2 = data1.rolling(2).apply(self.func_decaylinear, raw=True)
+        alpha = (self.close - self.settle)/data2
+
+        return alpha
+
+    def alpha_125(self):
+        ##### (RANK(DECAYLINEAR(CORR((VWAP), MEAN(VOLUME, 80), 17), 20)) / RANK(DECAYLINEAR(DELTA((CLOSE * 0.5 + VWAP * 0.5), 3), 16)))
+        data1 = self.settle.rolling(window=17).corr(self.volume.rolling(80, min_periods=30).mean()).fillna(0)
+        rank1 = (data1.rolling(window=20).apply(self.func_decaylinear, raw=True)).rank()
+
+        data2 = (self.close * 0.5 + self.settle * 0.5).diff(3)
+        rank2 = (data2.rolling(window=16).apply(self.func_decaylinear, raw=True)).rank()
+
+        alpha = rank1 / rank2
+
+        return alpha
+
+    def alpha_126(self):
+        #### (CLOSE + HIGH + LOW) / 3
+        alpha = (self.close + self.high + self.low) / 3
+        return alpha
+    #
+    # def alpha_127(self):
+    #     '''
+    #     公式不明
+    #
+    #     return
+
+    # def alpha_128(self):
+    #     未实现！
+    #     condition1 = ((self.high + self.low + self.close)/3 > ((self.high + self.low + self.close)/3).shift())
+    #     condition2 = ((self.high + self.low + self.close) / 3 < ((self.high + self.low + self.close) / 3).shift())
+    #     data1 = ((self.high + self.low + self.close)/3)*self.volume
+    #     data1[~condition1] = 0
+    #     sum1 = data1.rolling(14).sum()
+    #     data2 = ((self.high + self.low + self.close)/3)*self.volume
+    #     data2[~condition2] = 0
+    #     sum2 = data1.rolling(14).sum()
+    #     temp = sum1/sum2
+    #     alpha = 100 - 100 / (1 + temp)
+    #     return alpha
+
+    def alpha_129(self):
+        # ### SUM((CLOSE - DELAY(CLOSE, 1) < 0 ? ABS(CLOSE - DELAY(CLOSE, 1)):0), 12)
+        # # writen by Lin Qitao
+        data = self.close.diff(1)
+        data[data >= 0] = 0
+        data = abs(data)
+        alpha = data.rolling(12).sum()
+        return alpha
+
+    def alpha_130(self):
+        # ### (RANK(DELCAYLINEAR(CORR(((HIGH + LOW) / 2), MEAN(VOLUME, 40), 9), 10)) /
+        # RANK(DELCAYLINEAR(CORR(RANK(VWAP), RANK(VOLUME), 7), 3)))
+        data1 = (self.high + self.low) / 2
+        data2 = self.volume.rolling(40, min_periods=30).mean()
+        data3 = data1.rolling(window=9).corr(data2).fillna(0)
+        rank1 = (data3.rolling(10).apply(self.func_decaylinear, raw=True)).rank(axis=0, pct=1)
+
+        temp1 = self.settle.rank(axis=0, pct=True)
+        temp2 = self.volume.rank(axis=0, pct=True)
+        temp3 = temp1.rolling(window=7).corr(temp2).fillna(0)
+        rank2 = (temp3.rolling(3).apply(self.func_decaylinear, raw=True)).rank(axis=0, pct=1)
+
+        alpha = rank1 / rank2
+        return alpha
+
+    def alpha_131(self):
+        data1 = self.close
+        data2 = self.volume.rolling(50, min_periods=30).mean()
+        corr1 = data1.rolling(18).corr(data2).fillna(0)
+        tsrank1 = corr1.rolling(18).apply(self.func_rank, raw=True)
+        rank1 = (self.settle.shift()).rank(axis=0, pct=True)
+        alpha = rank1 ** tsrank1
+
+        return alpha
+
+    def alpha_132(self):
+        alpha = (self.volume*self.settle).rolling(20).mean()
+
+        return alpha
+
+    def alpha_133(self):
+        #### ((20 - HIGHDAY(HIGH, 20)) / 20)*100 - ((20 - LOWDAY(LOW, 20)) / 20)*10
+        alpha = (20 - self.high.rolling(20).apply(self.func_highday, raw=True)) / 20 * 100 \
+                - (20 - self.low.rolling(20).apply(self.func_lowday, raw=True)) / 20 * 100
+
+        return alpha
+
+    def alpha_134(self):
+        #### (CLOSE - DELAY(CLOSE, 12)) / DELAY(CLOSE, 12) * VOLUME
+        alpha = (self.close / self.close.shift(12) - 1) * self.volume
+
+        return alpha
+
+    def alpha_135(self):
+        #### SMA(DELAY(CLOSE / DELAY(CLOSE, 20), 1), 20, 1)
+        def rolling_div(na):
+            return na[-1] / na[-21]
+
+        data1 = self.close.rolling(21).apply(rolling_div, raw=True).shift(periods=1)
+        alpha = data1.ewm(alpha=1.0/20).mean()
+
+        return alpha
+
+    def alpha_136(self):
+        #### ((-1 * RANK(DELTA(RET, 3))) * CORR(OPEN, VOLUME, 10))
+        data1 = -(self.close / self.close.shift() - 1).diff(3).rank(axis=0, pct=True)
+        data2 = self.open_price.rolling(10).corr(self.volume).fillna(0)
+        alpha = data1 * data2
+
+        return alpha
+    #
+    # def alpha_137(self):
+    #     '''
+    #     尚未实现
+    #     '''
+    #     return
+
+    # def alpha_138(self):
+    #     #### ((RANK(DECAYLINEAR(DELTA((((LOW * 0.7) + (VWAP * 0.3))), 3), 20)) - TSRANK(DECAYLINEAR(TSRANK(CORR(TSRANK(LOW, 8), TSRANK(MEAN(VOLUME, 60), 17), 5), 19), 16), 7)) * -1)
+    #     data1 = (self.low * 0.7 + self.settle * 0.3).diff(3)
+    #     rank1 = (data1.rolling(20).apply(self.func_decaylinear, raw=True)).rank(axis=0, pct=True)
+    #
+    #     data2 = self.low.rolling(8).apply(self.func_rank, raw=True)
+    #     data3 = (self.volume.rolling(60, min_periods=30).mean()).rolling(17).apply(self.func_rank, raw=True)
+    #     data3 = (data2.rolling(5).corr(data3).fillna(0)).rolling(19).apply(self.func_rank, raw=True)
+    #     rank2 = (data3.rolling(16).apply(self.func_decaylinear, raw=True)).rolling(7).apply(self.func_rank, raw=True)
+    #     alpha = rank2 - rank1
+    #     return alpha
+
+    def alpha_139(self):
+        #### (-1 * CORR(OPEN, VOLUME, 10))
+        alpha = - self.open_price.rolling(10).corr(self.volume).fillna(0)
+        return alpha
+
+    def alpha_140(self):
+        #### MIN(RANK(DECAYLINEAR(((RANK(OPEN) + RANK(LOW)) - (RANK(HIGH) + RANK(CLOSE))), 8)), TSRANK(DECAYLINEAR(CORR(TSRANK(CLOSE, 8), TSRANK(MEAN(VOLUME, 60), 20), 8), 7), 3))
+        data1 = self.open_price.rank(axis=0, pct=True) + self.low.rank(axis=0, pct=True) \
+                - self.high.rank(axis=0, pct=True) - self.close.rank(axis=0, pct=True)
+        rank1 = data1.rolling(8).apply(self.func_decaylinear, raw=True).rank(axis=0, pct=True)
+
+        data2 = self.close.rolling(8).apply(self.func_rank, raw=True)
+        data3 = (self.volume.rolling(60, min_periods=30).mean().rolling(20)).apply(self.func_rank, raw=True)
+        data4 = data2.rolling(8).corr(data3).fillna(0)
+        data5 = data4.rolling(7).apply(self.func_decaylinear, raw=True)
+        rank2 = data5.rolling(3).apply(self.func_rank, raw=True)
+        alpha = np.minimum(rank1, rank2)
+
+        return alpha
+
+    def alpha_141(self):
+        #### (RANK(CORR(RANK(HIGH), RANK(MEAN(VOLUME, 15)), 9))* -1)
+        df1 = self.high.rank(axis=0, pct=True)
+        df2 = (self.volume.rolling(15).mean()).rank(axis=0, pct=True)
+        alpha = (-df1.rolling(9).corr(df2)).fillna(0).rank(axis=0, pct=True)
+        return alpha
+
+    def alpha_142(self):
+        #### (((-1 * RANK(TSRANK(CLOSE, 10))) * RANK(DELTA(DELTA(CLOSE, 1), 1))) * RANK(TSRANK((VOLUME/MEAN(VOLUME, 20)), 5)))
+
+        rank1 = self.close.rolling(10).apply(self.func_rank, raw=True)
+        rank2 = (self.close.diff(1).diff(1)).rank(axis=0, pct=True)
+        temp = self.volume / self.volume.rolling(20).mean()
+        rank3 = temp.rolling(5).apply(self.func_rank, raw=True)
+        alpha = -rank1 * rank2 * rank3
+        return alpha
+    #
+    # def alpha_143(self):
+    #     #### CLOSE > DELAY(CLOSE, 1)?(CLOSE - DELAY(CLOSE, 1)) / DELAY(CLOSE, 1) * SELF : SELF
+    #     '''
+    #     公式不明
+    #     SELF 初始值怎么设？
+    #     '''
+    #     return 0
+    #
+    # def alpha_144(self):
+    #     未实现
+    #     #### SUMIF(ABS(CLOSE/DELAY(CLOSE, 1) - 1)/AMOUNT, 20, CLOSE < DELAY(CLOSE, 1))/COUNT(CLOSE < DELAY(CLOSE, 1), 20)
+    #     condition = (self.close < self.close.shift())
+    #     indicator = pd.Series(np.zeros(self.close.shape), index=self.close.index)
+    #     indicator[condition] = pd.Series(np.ones(self.close.shape), index=self.close.index)[condition]
+    #     sumif = ((abs(self.close / self.close.shift() - 1) / (self.volume * self.settle)) * indicator).rolling(20).sum()
+    #     count = indicator.rolling(20).sum()
+    #
+    #     alpha = sumif / count
+    #
+    #     return alpha
+    #
+    def alpha_145(self):
+        #### (MEAN(VOLUME, 9) - MEAN(VOLUME, 26)) / MEAN(VOLUME, 12) * 100
+
+        alpha = (self.volume.rolling(9).mean() - self.volume.rolling(26).mean()) / self.volume.rolling(12).mean() * 100
+        return alpha
+
+    # def alpha_146(self):
+    #     '''
+    #     尚未实现
+    #     '''
+    #     return
+    #
+    def alpha_147(self):
+
+         def regbeta(A):
+            B = np.arange(1, 13)  # 等差S
+            slope, intercept, r_value, p_value, std_err = sp.stats.linregress(B, A)
+            if p_value > 0.05:
+                slope = 0
+            return slope
+
+         alpha = (self.close.rolling(12).mean()).rolling(12).apply(regbeta, raw=True)
+
+         return alpha
+
+    # def alpha_148(self):
+        #### ((RANK(CORR((OPEN), SUM(MEAN(VOLUME, 60), 9), 6)) < RANK((OPEN - TSMIN(OPEN, 14)))) * -1)
+    #    df1 = (self.volume.rolling(60, min_periods=30).mean()).rolling(9).sum()
+    #    rank1 = (self.open_price.rolling(6).corr(df1).fillna(0)).rank(axis=0, pct=True)
+    #    rank2 = (self.open_price - self.open_price.rolling(14).min()).rank(axis=0, pct=True)
+    #    alpha = -pd.Series(np.ones(self.close.shape), index=self.close.index)
+    #    alpha[(rank1 >= rank2)] = 0
+
+    #    return alpha
+
+    # def alpha_149(self):
+    #     '''
+    #     尚未实现
+    #     '''
+    #     return
+    #
+    def alpha_150(self):
+        #### (CLOSE + HIGH + LOW)/3 * VOLUME
+
+        alpha = (self.close + self.high + self.low) / 3 * self.volume
+
+        return alpha
+    #
+    def alpha_151(self):
+        data1 = self.close - self.close.shift(20)
+        alpha = data1.ewm(alpha=1.0/20).mean()
+
+        return alpha
+
+    def alpha_152(self):
+        # SMA(MEAN(DELAY(SMA(DELAY(CLOSE/DELAY(CLOSE,9),1),9,1),1),12)-MEAN(DELAY(SMA(DELAY(CLOSE/DELAY(CLOSE,9),1),9,1),1),26),9,1) #
+        temp1 = (self.close / self.close.shift(9)).shift()
+        data1 = temp1.ewm(alpha=1.0/9).mean()
+        part1 = (data1.shift()).rolling(12).mean()
+        part2 = (data1.shift()).rolling(26).mean()
+
+        alpha = (part1 - part2).ewm(alpha=1.0/9).mean()
+
+        return alpha
+
+    def alpha_153(self):
+        # (MEAN(CLOSE,3)+MEAN(CLOSE,6)+MEAN(CLOSE,12)+MEAN(CLOSE,24))/4 #
+        alpha = (self.close.rolling(3).mean() + self.close.rolling(6).mean() + self.close.rolling(12).mean() +
+                 self.close.rolling(24).mean()) / 4
+
+        return alpha
+
+    # def alpha_154(self):
+    #     # (((VWAP-MIN(VWAP,16)))<(CORR(VWAP,MEAN(VOLUME,180),18))) #
+    #     result = (self.settle - self.settle.rolling(16).min() < self.settle.rolling(18).corr(self.volume.rolling(180, min_periods=30).mean()).fillna(0))
+    #     alpha = pd.Series(np.ones(self.close.shape), index=self.close.index)
+    #     alpha[~result] = 0
+    #
+    #     return alpha
+
+    def alpha_155(self):
+        # SMA(VOLUME,13,2)-SMA(VOLUME,27,2)-SMA(SMA(VOLUME,13,2)-SMA(VOLUME,27,2),10,2) #
+        sma1 = self.volume.ewm(alpha=2.0/13).mean()
+        sma2 = self.volume.ewm(alpha=2.0/27).mean()
+        sma = (sma1 - sma2).ewm(alpha=2.0/10).mean()
+        alpha = sma1 - sma2 - sma
+
+        return alpha
+
+    def alpha_156(self):
+        # (MAX(RANK(DECAYLINEAR(DELTA(VWAP,5),3)),RANK(DECAYLINEAR(((DELTA(((OPEN*0.15)+(LOW*0.85)),2)/((OPEN*0.15)+(LOW*0.85)))*-1),3)))*-1 #
+        rank1 = (self.settle.diff(5).rolling(3).apply(self.func_decaylinear, raw=True)).rank(axis=0, pct=True)
+        temp1 = -(self.open_price * 0.15 + self.low * 0.85).diff(2) / (self.open_price * 0.15 + self.low * 0.85)
+        rank2 = temp1.rolling(3).apply(self.func_decaylinear, raw=True).rank(axis=0, pct=True)
+        max_cond = (rank1 > rank2)
+        result = rank2
+        result[max_cond] = rank1[max_cond]
+        alpha = -result
+        return alpha
+
+    def alpha_157(self):
+        rank1 = (-((self.close - 1).diff(5)).rank(axis=0, pct=True)).rank(axis=0, pct=True).rank(axis=0, pct=True)
+        min1 = rank1.rolling(2).min()
+        log1 = np.log(min1)
+        rank2 = log1.rank(axis=0, pct=True).rank(axis=0, pct=True)
+        cond_min = (rank2 > 5)
+        rank2[cond_min] = 5
+        tsrank1 = (-(self.close.pct_change().shift(6))).rolling(5).apply(self.func_rank, raw=True)
+        alpha = rank2 + tsrank1
+
+        return alpha
+
+    def alpha_158(self):
+        # ((HIGH-SMA(CLOSE,15,2))-(LOW-SMA(CLOSE,15,2)))/CLOSE #
+        alpha = ((self.high - self.close.ewm(alpha=2.0/15).mean()) - (
+                    self.low - self.close.ewm(alpha=2.0/15).mean())) / self.close
+
+        return alpha
+
+    def alpha_159(self):
+        # ########((close-sum(min(low,delay(close,1)),6))/sum(max(high,delay(close,1))-min(low,delay(close,1)),6)*
+        # 12*24+(close-sum(min(low,delay(close,1)),12))/sum(max(high,delay(close,1))-min(low,delay(close,1)),12)*6*24+
+        # (close-sum(min(low,delay(close,1)),24))/sum(max(high,delay(close,1))-min(low,delay(close,1)),24)*6*24)*100/
+        # (6*12+6*24+12*24)
+        data1 = pd.Series.copy(self.low)
+        data2 = self.close.shift()
+        cond = (data1 > data2)
+        data1[cond] = data2
+        data3 = pd.Series.copy(self.high)
+        data4 = self.close.shift()
+        cond = (data3 > data4)
+        data3[~cond] = data4
+        # 计算出公式核心部分x
+        x = ((self.close - data1.rolling(6).sum()) / (data2 - data1).rolling(6).sum()) * 12 * 24
+        # 计算出公式核心部分y
+        y = ((self.close - data1.rolling(12).sum()) /(data2 - data1).rolling(12).sum()) * 6 * 24
+        # 计算出公式核心部分z
+        z = ((self.close - data1.rolling(24).sum()) / (data2 - data1).rolling(24).sum()) * 6 * 24
+        alpha = (x + y + z) * (100 / (6 * 12 + 12 * 24 + 6 * 24))
+
+        return alpha
+
+    def alpha_160(self):
+        # ###########sma((close<=delay(close,1)?std(close,20):0),20,1)
+        data1 = self.close.rolling(20).std()
+        cond = (self.close <= self.close.shift())
+        data1[~cond] = 0
+        alpha = data1.ewm(alpha=1.0/20).mean()
+
+        return alpha
+
+    def alpha_161(self):
+        # ##########mean((max(max(high-low),abs(delay(close,1)-high)),abs(delay(close,1)-low)),12)
+        data1 = (self.high - self.low)
+        data2 = abs(self.close.shift() - self.high)
+        cond = data1 > data2
+        data1[~cond] = data2
+        data3 = abs(self.close.shift() - self.low)
+        cond = data1 > data3
+        data1[~cond] = data3
+        alpha = data1.rolling(12).mean()
+
+        return alpha
+
+    def alpha_162(self):
+        # ##############(sma(max(close-delay(close,1),0),12,1)/sma(abs(close-delay(close,1)),12,1)*100-
+        # min(sma(max(close-delay(close,1),0),12,1)/sma(abs(close-delay(close,1)),12,1)*100,12))/
+        # (max(sma(max(close-delay(close,1),0),12,1)/sma(abs(close-delay(close,1)),12,1)*100),12)-
+        # min(sma(max(close-delay(close,1),0),12,1)/sma(abs(close-delay(close,1)),12,1)*100),12))
+        # 算出公式核心部分X
+        data1 = self.close.diff()
+        cond = data1 > 0
+        data1[~cond] = 0
+        x = data1.ewm(alpha=1.0/12).mean()
+        # 算出公式核心部分Y
+        data2 = abs(self.close.diff())
+        y = data2.ewm(alpha=1.0/12).mean()
+        # 算出公式核心部分Z
+        z = (x / y) * 100
+        cond = z > 12
+        z[cond] = 12
+        # 计算公式核心部分C
+        c = (x / y) * 100
+        cond = c > 12
+        c[~cond] = 12
+        data3 = (x / y) * 100 - (z / c) - c
+        alpha = data3
+        return alpha
+
+    def alpha_163(self):
+        #######rank(((((-1*ret)*,ean(volume,20))*vwap)*(high-close)))
+        data1 = (-1) * (self.close / self.close.shift() - 1) * self.volume.rolling(20).mean() * self.settle * (
+                    self.high - self.close)
+        alpha = data1.rank(axis=0, pct=True)
+
+        return alpha
+
+    def alpha_164(self):
+        # ###########sma((((close>delay(close,1))?1/(close-delay(close,1)):1)-min(((close>delay(close,1))?1/
+        # (close/delay(close,1)):1),12))/(high-low)*100,13,2)
+        cond = self.close >= self.close.shift()
+        data1 = 1 / (self.close - self.close.shift())
+        data1[~cond] = 1
+        data2 = 1 / (self.close - self.close.shift())
+        cond = data2 > 12
+        data2[cond] = 12
+        data3 = data1 - data2 / ((self.high - self.low) * 100)
+        alpha = data3.ewm(alpha=2.0 / 13).mean()
+
+        return alpha
+
+    # def alpha_165(self):
+    #     return 0
+    #
+    # def alpha_166(self):
+    #     return 0
+
+    def alpha_167(self):
+        # ###sum(((close-delay(close,1)>0)?(close-delay(close,1)):0),12)####
+        data1 = self.close.diff()
+        cond = (data1 < 0)
+        data1[cond] = 0
+        data2 = data1.rolling(12).sum()
+        alpha = data2
+
+        return alpha
+
+    def alpha_168(self):
+        # ####-1*volume/mean(volume,20)####
+        alpha = (-1 * self.volume) / self.volume.rolling(20).mean()
+
+        return alpha
+
+    def alpha_169(self):
+        # ##sma(mean(delay(sma(close-delay(close,1),9,1),1),12)-mean(delay(sma(close-delay(close,1),1,1),1),26),10,1)#####
+        data1 = self.close.diff()
+        data2 = ((data1.ewm(alpha=1.0 / 9)).mean()).shift()
+        data3 = data2.rolling(12).mean() - data2.rolling(26).mean()
+        alpha = data3.ewm(alpha=1.0 / 10).mean()
+
+        return alpha
+
+    def alpha_170(self):
+        # ####((((rank((1/close))*volume)/mean(volume,20))*((high*rank((high-close)))/(sum(high,5)/5)))-rank((vwap-delay(vwap,5))))####
+        data1 = (1 / self.close).rank(axis=0, pct=True)
+        data2 = self.volume.rolling(20).mean()
+        x = (data1 * self.volume) / data2
+        data3 = (self.high - self.close).rank(axis=0, pct=True)
+        data4 = self.high.rolling(5).mean()
+        y = (data3 * self.high) / data4
+        z = (self.settle - self.settle).rank(axis=0, pct=True)
+        alpha = x * y - z
+
+        return alpha
+
+    def alpha_171(self):
+        # ###(((low-close)*open^5)*-1)/((close-high)*close^5)#####
+        data1 = -1 * (self.low - self.close) * (self.open_price ** 5)
+        data2 = (self.close - self.high) * (self.close ** 5)
+        alpha = data1 / data2
+        alpha = alpha.replace([np.inf, - np.inf], 0)
+        return alpha
+
+    def alpha_172(self):
+        # #MEAN(ABS(SUM((LD>0&LD>HD)?LD:0,14)*100/SUM(TR,14)-SUM((HD>0&HD>LD)?HD:0,14)*100/(SUM((LD>0&LD>HD)?LD:0,14)
+        # *100/SUM(TR,14)+SUM(TR,14)+SUM((HD>0&HD>LD)?HD:0,14)*100/SUM(TR,14))*100,6) #
+        hd = self.high - self.high.shift()
+        ld = self.low.shift() - self.low
+        temp1 = self.high - self.low
+        temp2 = (self.high - self.close.shift()).abs()
+        cond1 = temp1 > temp2
+        temp2[cond1] = temp1[cond1]
+        temp3 = (self.low - self.close.shift()).abs()
+        cond2 = temp2 > temp3
+        temp3[cond2] = temp2[cond2]
+        tr = temp3  # MAX(MAX(HIGH-LOW,ABS(HIGH-DELAY(CLOSE,1))),ABS(LOW-DELAY(CLOSE,1)))
+        sum_tr14 = tr.rolling(14).sum()
+        cond3 = ld > 0
+        cond4 = ld > hd
+        cond3[~cond4] = False
+        data1 = ld
+        data1[~cond3] = 0
+        sum1 = data1.rolling(14).sum() * 100 / sum_tr14
+        cond5 = hd > 0
+        cond6 = hd > ld
+        cond5[~cond6] = False
+        data2 = hd
+        data2[~cond5] = 0
+        sum2 = data2.rolling(14).sum() * 100 / sum_tr14
+        alpha = ((sum1 - sum2).abs() / (sum1 + sum2) * 100).rolling(6).mean()
+
+        return alpha
+
+    def alpha_173(self):
+        # ###3*sma(close,13,2)-2*sma(sma(close,13,2),13,2)+sma(sma(sma(log(close),13,2),13,2),13,2)#####
+        data1 = self.close.ewm(alpha=2.0 / 13).mean()
+        data2 = data1.ewm(alpha=2.0 / 13).mean()
+        close_log = np.log(self.close)
+        data3 = close_log.ewm(alpha=2.0 / 13).mean()
+        data4 = data3.ewm(alpha=2.0 / 13).mean()
+        data5 = data4.ewm(alpha=2.0 / 13).mean()
+        alpha = 3 * data1 - 2 * data2 + data5
+
+        return alpha
+
+    def alpha_174(self):
+        # ###sma((close>delay(close,1)?std(close,20):0),20,1)#####
+        cond = self.close > self.close.shift()
+        data2 = self.close.rolling(20).std()
+        data2[~cond] = 0
+        alpha = data2.ewm(alpha=1.0 / 20).mean()
+
+        return alpha
+
+    def alpha_175(self):
+        #####mean(max(max(high-low),abs(delay(close,1)-high)),abs(delay(close,1)-low)),6)####
+        data1 = self.high - self.low
+        data2 = abs(self.close.shift() - self.high)
+        cond = (data1 > data2)
+        data2[cond] = data1[cond]
+        data3 = abs(self.close.shift() - self.low)
+        cond = (data2 > data3)
+        data3[cond] = data2[cond]
+        alpha = data3.rolling(window=6).mean()
+
+        return alpha
+
+    def alpha_176(self):
+        # ######## #########corr(rank((close-tsmin(low,12))/(tsmax(high,12)-tsmin(low,12))),rank(volume),6)#############
+        data1 = (self.close - self.low.rolling(window=12).min()) / (
+                self.high.rolling(window=12).max() - self.low.rolling(window=12).min())
+        data2 = data1.rank(axis=0, pct=True)
+        data3 = self.volume.rank(axis=0, pct=True)
+        alpha = data2.rolling(6).corr(data3).fillna(0)
+
+        return alpha
+
+    def alpha_177(self):
+        # #### ((20-HIGHDAY(HIGH,20))/20)*100 #####
+        alpha = (20 - self.high.rolling(20).apply(self.func_highday, raw=True)) / 20 * 100
+
+        return alpha
+
+    def alpha_178(self):
+        # #### (close-delay(close,1))/delay(close,1)*volume ####
+        alpha = (self.close - self.close.shift()) / self.close.shift() * self.volume
+
+        return alpha
+
+    def alpha_179(self):
+        # ####（rank(corr(vwap,volume,4))*rank(corr(rank(low),rank(mean(volume,50)),12))####
+        rank1 = (self.settle.rolling(4).corr(self.volume).fillna(0)).rank(axis=0, pct=True)
+        data2 = self.low.rank(axis=0, pct=True)
+        data3 = (self.volume.rolling(50).mean()).rank(axis=0, pct=True)
+        rank2 = (data2.rolling(12).corr(data3).fillna(0)).rank(axis=0, pct=True)
+        alpha = rank1 * rank2
+
+        return alpha
+
+    def alpha_180(self):
+        # #### ((MEAN(VOLUME,20)<VOLUME)?((-1*TSRANK(ABS(DELTA(CLOSE,7)),60))*SIGN(DELTA(CLOSE,7)):(-1*VOLUME))) #####
+        ma = self.volume.rolling(window=20).mean()
+        cond = (ma < self.volume)
+        temp1 = abs(self.close.diff(7)).rolling(60, min_periods=30).apply(self.func_rank, raw=True)
+        temp2 = np.sign(self.close.diff(7).fillna(0))
+        result1 = -temp1 * temp2
+        result2 = - pd.Series.copy(self.volume)
+        result2[cond] = result1[cond]
+        alpha = result2
+
+        return alpha
+
+    #
+    # def alpha_181(self):
+    #
+    #     return 0
+    #
+    #
+    # def count_cond_182(self):
+    #
+    #     return 0
+    #
+    # def alpha_183(self):
+    #     return 0
+
+    def alpha_184(self):
+        # ####(rank(corr(delay((open-close),1),close,200))+rank((open-close))) ####
+        ##
+        data1 = self.open_price.shift() - self.close.shift()
+        data2 = self.open_price - self.close
+        corr = data1.rolling(200, min_periods=30).corr(self.close).fillna(0)
+        alpha = data2.rank(axis=0, pct=True) + corr.rank(axis=0, pct=True)
+
+        return alpha
+
+    def alpha_185(self):
+        # #### RANK((-1 * ((1 - (OPEN / CLOSE))^2))) ####
+        alpha = (-(1 - self.open_price / self.close) ** 2).rank(axis=0, pct=True)
+
+        return alpha
+
+    def alpha_186(self):
+        # (MEAN(ABS(SUM((LD>0 & LD>HD)?LD:0,14)*100/SUM(TR,14)-SUM((HD>0 & HD>LD)?HD:0,14)*100/SUM(TR,14))/
+        # (SUM((LD>0 & LD>HD)?LD:0,14)*100/SUM(TR,14)+SUM((HD>0 & HD>LD)?HD:0,14)*100/SUM(TR,14))*100,6)+
+        # DELAY(MEAN(ABS(SUM((LD>0 & LD>HD)?LD:0,14)*100/SUM(TR,14)-SUM((HD>0 & HD>LD)?HD:0,14)*100/SUM(TR,14))/
+        # (SUM((LD>0 & LD>HD)?LD:0,14)*100/SUM(TR,14)+SUM((HD>0 & HD>LD)?HD:0,14)*100/SUM(TR,14))*100,6),6))/2 #
+        hd = self.high - self.high.shift()
+        ld = self.low.shift() - self.low
+        temp1 = self.high - self.low
+        temp2 = (self.high - self.close.shift()).abs()
+        cond1 = temp1 > temp2
+        temp2[cond1] = temp1[cond1]
+        temp3 = (self.low - self.close.shift()).abs()
+        cond2 = temp2 > temp3
+        temp3[cond2] = temp2[cond2]
+        tr = temp3  # MAX(MAX(HIGH-LOW,ABS(HIGH-DELAY(CLOSE,1))),ABS(LOW-DELAY(CLOSE,1)))
+        sum_tr14 = tr.rolling(14).sum()
+        cond3 = ld > 0
+        cond4 = ld > hd
+        cond3[~cond4] = False
+        data1 = ld
+        data1[~cond3] = 0
+        sum1 = data1.rolling(14).sum() * 100 / sum_tr14
+        cond5 = hd > 0
+        cond6 = hd > ld
+        cond5[~cond6] = False
+        data2 = hd
+        data2[~cond5] = 0
+        sum2 = data2.rolling(14).sum() * 100 / sum_tr14
+        mean1 = ((sum1 - sum2).abs() / (sum1 + sum2) * 100).rolling(6).mean()
+        alpha = (mean1 + mean1.shift(6)) / 2
+
+        return alpha
+
+    def alpha_187(self):
+        # #### SUM((OPEN<=DELAY(OPEN,1)?0:MAX((HIGH-OPEN),(OPEN-DELAY(OPEN,1)))),20) ####
+
+        cond = (self.open_price <= self.open_price.shift())
+        data1 = self.high - self.low  # HIGH-LOW
+        data2 = self.open_price - self.open_price.shift()  # OPEN-DELAY(OPEN,1)
+        cond_max = data2 > data1
+        data1[cond_max] = data2[cond_max]
+        data1[cond] = 0
+        alpha = data1.rolling(20).sum()
+
+        return alpha
+
+    def alpha_188(self):
+        # #### ((HIGH-LOW–SMA(HIGH-LOW,11,2))/SMA(HIGH-LOW,11,2))*100 #####
+        sma = (self.high - self.low).ewm(alpha=2.0 / 11).mean()
+        alpha = (self.high - self.low - sma) / sma * 100
+
+        return alpha
+
+    def alpha_189(self):
+        # #### mean(abs(close-mean(close,6),6)) ####
+        ma6 = self.close.rolling(window=6).mean()
+        alpha = ((self.close - ma6).abs()).rolling(window=6).mean()
+
+        return alpha
+
+    # def alpha_190(self):
+    #
+    #     return 0
+
+    def alpha_191(self):
+        # #### (CORR(MEAN(VOLUME,20), LOW, 5) + ((HIGH + LOW) / 2)) - CLOSE ####
+        volume_avg = self.volume.rolling(window=20).mean()
+        corr = volume_avg.rolling(5).corr(self.low).fillna(0)
+        alpha = corr + (self.high + self.low) / 2 - self.close
+
+        return alpha
+
