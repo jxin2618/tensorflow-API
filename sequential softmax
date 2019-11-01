@@ -1,0 +1,228 @@
+from datetime import datetime
+import tensorflow as tf
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn import decomposition
+import os
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.callbacks import EarlyStopping
+from keras.layers import Dropout
+from keras import initializers
+from sklearn import preprocessing
+from keras import backend as K
+import random
+
+tic = datetime.now()
+# set random seed
+seed_value = 42
+os.environ['PYTHONHASHSEED'] = str(seed_value)
+np.random.seed(seed_value)
+random.seed(seed_value)
+config = tf.ConfigProto(intra_op_parallelism_threads=1, inter_op_parallelism_threads=1)
+tf.set_random_seed(seed_value)
+sess = tf.Session(graph=tf.get_default_graph(), config=config)
+
+# read features data
+filename1 = 'D:/QuantCN/nn_result/nn_together/等权组合/Oct_Week2/Mon/factors/features_label.csv'
+df = pd.read_csv(filename1, encoding='gb18030', low_memory=False)
+# 4 labels: ['OptionCode', 'EndDate', 'rtn', 'rtn_roll_-1']
+df['EndDate'] = df.loc[:, 'EndDate'].apply(lambda x: pd.Timestamp(x))
+option = df.OptionCode.unique()
+num_option = len(option)
+df = df.sort_values(by=['EndDate', 'OptionCode'], ascending=True)
+df = df.reset_index(drop=True)
+End_Date = df.EndDate.unique()
+num_date = len(End_Date)
+df_row, df_col = df.shape
+features_columns = df.iloc[:, 4:].columns.to_list()
+# read industrial factors
+filename2 = 'C:/Users/Administrator/Desktop/QuantCN/main/option_date.xlsx'
+industry_category = pd.read_excel(filename2, sheet_name='Sheet2')
+industry_category = industry_category.loc[:, ['OptionCode', '黑色系', '化工品', '农产品', '有色金属', '贵金属']]
+
+
+cells_list = [30, 50, 70, 90, 110]
+
+pca_component = 90
+learning_rate = 0.1
+epoch = 10
+percent_select = [0.3, 0.3]
+
+
+def draw_graphs(size, y, z, sub_date):
+    # x = size, y = net value, z = draw down
+    x = list(range(size))
+    fig = plt.figure()
+    ax1 = fig.add_subplot(111)
+    l1, = ax1.plot(x, y, 'b', label='net value')
+    ax1.set_ylabel('Net Value')
+    ax1.set_yticks([0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2])
+    ax1.set_title(str(code))
+
+    ax2 = ax1.twinx()  # this is the important function
+    l2, = ax2.plot(x, z, 'r', label='draw down')
+    ax2.fill_between(x, z, where=(z < 0), facecolor='red')
+    ax2.set_ylabel('Draw Down')
+    ax2.set_yticks([-1, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0])
+
+    num_sub_date = len(sub_date)
+    sub_date = pd.DataFrame(sub_date)
+    sub_date = sub_date.loc[:, 0].apply(lambda x: str(x)[:-9])
+    plt.xticks(ticks=list(np.linspace(0, num_sub_date, 5, endpoint=False, dtype=int)), labels=list(
+        sub_date.loc[list(np.linspace(0, num_sub_date, 5, endpoint=False, dtype=int))].values))
+    plt.xticks(rotation=90)
+    plt.legend(handles=[l1, l2], labels=['net value', 'draw down'], loc='lower left')
+    plt.savefig(path_results + 'graphs/' + str(int(code)) + '.png', dpi=120)
+    plt.close(fig)
+
+
+def label_data(data):
+    # initialize
+    data.insert(loc=0, column='return_bin', value=0)
+    # sort by rtn in next two days
+    data = data.sort_values(by='rtn_roll_-1', ascending=False)
+    # decide how much options will be selected
+    n_option_select = np.multiply(percent_select, data.shape[0])
+    n_option_select = np.around(n_option_select).astype(int)
+    # assign 1 or -1 or 0
+    data.iloc[0:n_option_select[0], 0] = 1
+    data.iloc[-n_option_select[1]:, 0] = -1
+
+    return data
+
+
+for n_hidden_1 in cells_list:
+    for n_hidden_2 in cells_list:
+        if n_hidden_1 == 50 and n_hidden_2 == 30:
+            pass
+        else:
+            path_results = 'D:/QuantCN/nn_result/nn_together/等权组合/Oct_Week3/Fri/softmax/' + str(n_hidden_1) + \
+                           '-' + str(n_hidden_2) + '/'
+            os.mkdir(path_results)
+            info_file = open(path_results + 'info.txt', 'a')
+            info_file.write('input =' + str(178) + '\n' + 'pca_select = ' + str(pca_component) + '\n' +
+                            'number of cells = [' + str(n_hidden_1) + ', ' + str(n_hidden_2) + '\n' + 'learning_rate = '
+                            + str(learning_rate) + '\n' + 'epoch = ' + str(epoch) + '\n')
+            info_file.close()
+
+            pred_df = pd.DataFrame()
+
+            model = Sequential()
+            model.add(Dense(n_hidden_1, input_shape=(95,), activation=tf.nn.tanh,
+                            kernel_initializer=initializers.truncated_normal(stddev=0.01),
+                            bias_initializer=initializers.Zeros(),
+                            name='Layer1'))
+            model.add(Dense(n_hidden_2, kernel_initializer=initializers.truncated_normal(stddev=0.01),
+                            bias_initializer=initializers.Zeros(), activation=tf.nn.tanh, name='Layer2'))
+            model.add(Dense(3, activation='softmax'))
+            model.compile(optimizer=tf.train.AdamOptimizer(learning_rate=learning_rate), loss='categorical_crossentropy',
+                          metrics=['accuracy'])
+            call_back = EarlyStopping(monitor='accuracy', min_delta=0.02, patience=3, mode='max')
+
+            for i in range(251, num_date):
+                print(End_Date[i])
+                df2 = df.loc[df['EndDate'].isin(End_Date[i - 251: i + 1])]
+                df2.reset_index(drop=True, inplace=True)
+                x_factors = df2.iloc[:, 4:].values
+                x_label = df2.iloc[:, :4]
+                # normalization and PCA
+                scaler = preprocessing.StandardScaler().fit(x_factors)
+                x_factors = scaler.transform(x_factors)
+                pca = decomposition.PCA(n_components=pca_component)
+                pca.fit(x_factors)
+                x_factors = pca.transform(x_factors)
+                # add industrial factors
+                x_factors_df = pd.DataFrame(x_factors, columns=list(range(pca_component)))
+                df3 = pd.concat([x_label, x_factors_df], axis=1)
+                df4 = pd.merge(df3, industry_category, on='OptionCode', how='outer')
+                df4.dropna(subset=['EndDate'], axis=0, inplace=True)
+                df4 = label_data(df4)
+                # split train set and test set
+                x_train_df = df4.loc[df4['EndDate'].isin(End_Date[i - 251: i - 1])]
+                x_data = x_train_df.iloc[:, 5:].values
+                x_test_df = df4.loc[df4['EndDate'] == End_Date[i]]
+                y_data = x_train_df.loc[:, 'return_bin'].values
+                y_data = tf.keras.utils.to_categorical(y_data, num_classes=3)
+                # train the model and predict the return
+                pred_inputs = x_test_df.iloc[:, 5:].values
+                model.fit(x=x_data, y=y_data, batch_size=32, epochs=epoch, callbacks=[call_back])
+
+                predictions = model.predict(pred_inputs)
+                label = np.argmax(predictions, axis=1)
+                x_test_df.insert(loc=0, column='label', value=label)
+                pred_df = pd.concat([pred_df, x_test_df], axis=0, ignore_index=True)
+
+            pred_df_all = pd.DataFrame()
+            os.mkdir(path_results + 'pred/')
+            os.mkdir(path_results + 'graphs/')
+            for j in range(num_option):
+                code = option[j]
+                sub_df = pred_df.loc[pred_df.loc[:, 'OptionCode'] == code]
+                sub_df_size = sub_df.iloc[:, 0].size
+                sub_df.reset_index(drop=True, inplace=True)
+                sub_date = sub_df.EndDate.unique()
+
+                label = sub_df.loc[:, 'label'].values
+                indicator = np.roll(label, 1)
+                indicator[0] = 0
+                indicator[indicator == 2] = -1
+                actual_rtn = sub_df.loc[:, 'rtn'].values * indicator
+                net_value = (actual_rtn + 1).cumprod()
+
+                tmp_max = np.maximum.accumulate(net_value)
+                draw_down = net_value / tmp_max - 1
+                daily_indicator = pd.DataFrame({'indicator': indicator, 'actual_rtn': actual_rtn, 'net_value': net_value,
+                     'draw_down': draw_down})
+
+                sub_df = pd.concat([sub_df, daily_indicator], axis=1)
+                sub_df.to_excel(path_results + 'pred/' + str(code) + '.xlsx', encoding='gb18030', index=False)
+                pred_df_all = pd.concat([pred_df_all, sub_df], axis=0, ignore_index=True)
+                draw_graphs(sub_df_size, net_value, draw_down, sub_date)
+
+            pred_df_all.to_excel(path_results + 'pred_all.xlsx', encoding='gb18030', index=False)
+
+            Date1 = pred_df_all.EndDate.unique()
+            num1 = len(Date1)
+            Date = pd.DataFrame(Date1)
+            Date = Date.loc[:, 0].apply(lambda x: str(x)[:-9])
+            rtn = np.zeros(num1)
+
+            for i in range(num1):
+                sub_df = pred_df_all.loc[pred_df_all.loc[:, 'EndDate'] == Date1[i]]
+                rtn[i] = np.mean(sub_df.loc[:, 'actual_rtn'].values)
+
+            net_value_all = (1 + rtn).cumprod()
+            tmp_max_all = np.maximum.accumulate(net_value_all)
+            draw_down_all = net_value_all / tmp_max_all - 1
+
+            data = {'date': Date, 'rtn': list(rtn), 'net_value': list(net_value_all), 'draw_down': list(draw_down_all)}
+            port_indicator = pd.DataFrame(data)
+
+            port_indicator.to_excel(path_results + 'port_indicator.xlsx', encoding='gb18030', index=False)
+
+            x = range(1, num1 + 1)
+            fig2 = plt.figure()
+            ax1 = fig2.add_subplot(111)
+            l1, = ax1.plot(x, net_value_all, 'b', label='net value')
+            ax1.set_ylabel('Net Value')
+            ax1.set_yticks([0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2])
+            ax1.set_title('portfolio indicators')
+
+            ax2 = ax1.twinx()  # this is the important function
+            l2, = ax2.plot(x, draw_down_all, 'r', label='draw down')
+            ax2.fill_between(x, draw_down_all, where=(draw_down_all < 0), facecolor='red')
+
+            ax2.set_ylabel('Draw Down')
+            ax2.set_yticks([-0.5, -0.4, -0.3, -0.2, -0.1, 0])
+            ax2.set_xlabel('End Date')
+
+            plt.xticks(ticks=list(np.linspace(0, num1, 5, endpoint=False, dtype=int)), labels=list(
+                Date.loc[list(np.linspace(0, num1, 5, endpoint=False, dtype=int))].values))
+            plt.legend(handles=[l1, l2], labels=['net value', 'draw down'], loc='lower left')
+            plt.savefig(path_results + 'port_indicator.png', dpi=120)
+            plt.close(fig2)
+            toc = datetime.now()
+            print(toc)
+            print(toc - tic)
