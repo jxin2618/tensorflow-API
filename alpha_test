@@ -1,0 +1,57 @@
+import pandas as pd
+import numpy as np
+import alpha_191
+import importlib
+importlib.reload(alpha_191)
+
+
+filename1 = 'C:/Users/Administrator/Desktop/QuantCN/factors/Sep_Week4/factors_min.csv'
+new_df = pd.read_csv(filename1, encoding='gb18030')
+new_df['EndDate'] = new_df.loc[:, 'EndDate'].apply(lambda x: pd.Timestamp(x))
+option = new_df.OptionCode.unique()
+alpha = pd.DataFrame()
+
+
+for code in option:
+    sub_df = new_df[new_df.loc[:, 'OptionCode'] == code]
+    sub_df.reset_index(drop=True, inplace=True)
+    sub_df_size = sub_df.iloc[:, 0].size
+    if sub_df_size > 90:
+        alpha_factors = alpha_191.CalAlpha(code)
+        alpha_names = [method for method in dir(alpha_factors) if callable(getattr(alpha_factors, method)) if
+                       not method.startswith('_')]
+        del (alpha_names[-1], alpha_names[-1], alpha_names[-1], alpha_names[-1])
+        num_alpha = len(alpha_names)
+        # alpha_temp = pd.DataFrame(columns=alpha_names)
+        alpha_tmp = np.zeros((sub_df_size, num_alpha))
+
+        for j in range(num_alpha):
+            alpha_code = alpha_names[j]
+            alpha_value = getattr(alpha_factors, alpha_code)()
+            alpha_tmp[:, j] = alpha_value
+
+        alpha_tmp[np.isinf(alpha_tmp)] = 0
+        alpha_tmp[np.isnan(alpha_tmp)] = 0
+
+        alpha_tmp = np.delete(alpha_tmp, list(range(90)), axis=0)
+
+        alpha_median = np.median(alpha_tmp, axis=0)
+        alpha_mad = np.median(abs(alpha_tmp - alpha_median), axis=0)
+
+        for p in range(num_alpha):
+            if np.all(np.isin(alpha_tmp[:, p], [-1, 0, 1])) is True:
+                pass
+            else:
+                alpha_tmp[(alpha_tmp[:, p] > alpha_median[p] + 5 * alpha_mad[p]), p] = alpha_median[p] + 5 * alpha_mad[p]
+                alpha_tmp[(alpha_tmp[:, p] < alpha_median[p] - 5 * alpha_mad[p]), p] = alpha_median[p] - 5 * alpha_mad[p]
+
+        alpha_df = pd.DataFrame(alpha_tmp, columns=alpha_names)
+
+        sub_df = sub_df.drop(axis=0, index=list(range(90)))
+        sub_df.reset_index(inplace=True, drop=True)
+        sub_df_alpha = pd.concat([sub_df, alpha_df], axis=1)
+
+        alpha = pd.concat([alpha, sub_df_alpha], axis=0, ignore_index=True)
+
+
+alpha.to_csv('C:/Users/Administrator/Desktop/QuantCN/factors/Sep_Week4/factors_min_alpha.csv', encoding='gb18030', index=False)
