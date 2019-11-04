@@ -1,2 +1,2 @@
 # tensorflow-API
-some API practices
+practice machine learning methods in tensorflow,sklearn
